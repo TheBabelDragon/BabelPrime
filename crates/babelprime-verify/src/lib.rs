@@ -37,9 +37,7 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
         || input_s.starts_with('-')
         || !input_s.bytes().all(|b| b.is_ascii_digit())
     {
-        return Err(VerifyError::Failed(format!(
-            "non-canonical input_integer: {input_s}"
-        )));
+        return Err(VerifyError::Failed(format!("non-canonical input_integer: {input_s}")));
     }
     let input = result.input_integer.to_biguint()?;
 
@@ -60,9 +58,7 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
             return Err(VerifyError::Failed(format!("invalid factor {ps}")));
         }
         if &input % &p != BigUint::zero() {
-            return Err(VerifyError::Failed(format!(
-                "factor {ps} does not divide input"
-            )));
+            return Err(VerifyError::Failed(format!("factor {ps} does not divide input")));
         }
         for _ in 0..fp.exponent {
             product *= &p;
@@ -75,15 +71,11 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
             || (cs.len() > 1 && cs.starts_with('0'))
             || !cs.bytes().all(|b| b.is_ascii_digit())
         {
-            return Err(VerifyError::Failed(format!(
-                "non-canonical remaining_cofactor: {cs}"
-            )));
+            return Err(VerifyError::Failed(format!("non-canonical remaining_cofactor: {cs}")));
         }
         let cv = c.to_biguint()?;
         if cv <= BigUint::one() {
-            return Err(VerifyError::Failed(
-                "remaining_cofactor must be >= 2".into(),
-            ));
+            return Err(VerifyError::Failed("remaining_cofactor must be >= 2".into()));
         }
         product *= cv;
     }
@@ -99,19 +91,13 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
     match result.completeness {
         Completeness::Complete => {
             if result.remaining_cofactor.is_some() {
-                return Err(VerifyError::Failed(
-                    "complete but has remaining_cofactor".into(),
-                ));
+                return Err(VerifyError::Failed("complete but has remaining_cofactor".into()));
             }
             if result.verification_status != VerificationStatus::Verified {
-                return Err(VerifyError::Failed(
-                    "complete requires verification_status=verified".into(),
-                ));
+                return Err(VerifyError::Failed("complete requires verification_status=verified".into()));
             }
             if result.discovered_factors.is_empty() {
-                return Err(VerifyError::Failed(
-                    "complete factorization has no factors".into(),
-                ));
+                return Err(VerifyError::Failed("complete factorization has no factors".into()));
             }
             for fp in &result.discovered_factors {
                 match &fp.primality {
@@ -129,9 +115,7 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
         }
         Completeness::Partial => {
             if result.remaining_cofactor.is_none() {
-                return Err(VerifyError::Failed(
-                    "partial requires remaining_cofactor".into(),
-                ));
+                return Err(VerifyError::Failed("partial requires remaining_cofactor".into()));
             }
             if result.verification_status == VerificationStatus::Verified {
                 return Err(VerifyError::Failed(
@@ -141,9 +125,7 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
         }
         Completeness::Incomplete => {
             if result.verification_status == VerificationStatus::Verified {
-                return Err(VerifyError::Failed(
-                    "incomplete must not claim verified".into(),
-                ));
+                return Err(VerifyError::Failed("incomplete must not claim verified".into()));
             }
         }
     }
@@ -164,10 +146,7 @@ pub fn recheck_primality(
     for fp in &result.discovered_factors {
         let p = fp.prime.to_biguint()?;
         let ev = miller_rabin(&p, rounds, seed).map_err(|e| VerifyError::Failed(e.to_string()))?;
-        if matches!(
-            ev.status,
-            PrimalityStatus::Composite | PrimalityStatus::Undetermined
-        ) {
+        if matches!(ev.status, PrimalityStatus::Composite | PrimalityStatus::Undetermined) {
             return Ok(false);
         }
     }
@@ -175,8 +154,8 @@ pub fn recheck_primality(
 }
 
 pub fn verify_json(json: &str) -> Result<(), VerifyError> {
-    let result: FactorizationResult =
-        serde_json::from_str(json).map_err(|e| VerifyError::Failed(format!("invalid JSON: {e}")))?;
+    let result: FactorizationResult = serde_json::from_str(json)
+        .map_err(|e| VerifyError::Failed(format!("invalid JSON: {e}")))?;
     verify_result(&result)
 }
 
