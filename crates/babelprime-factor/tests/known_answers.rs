@@ -82,7 +82,11 @@ fn factor_91() {
     assert_eq!(res.completeness, Completeness::Complete);
     assert_eq!(res.verification_status, VerificationStatus::Verified);
     assert!(product_matches(&res, &n));
-    let primes: Vec<_> = res.discovered_factors.iter().map(|f| f.prime.as_str()).collect();
+    let primes: Vec<_> = res
+        .discovered_factors
+        .iter()
+        .map(|f| f.prime.as_str())
+        .collect();
     assert!(primes.contains(&"7"));
     assert!(primes.contains(&"13"));
 }
@@ -160,11 +164,13 @@ fn hex_input() {
 
 #[test]
 fn budget_exhaustion_partial() {
-    let mut cfg = cfg_quick();
-    cfg.operation_budget = 5;
-    cfg.trial_bound = 3;
-    cfg.enable_rho = false;
-    cfg.enable_p1 = false;
+    let cfg = FactorJobConfig {
+        operation_budget: 5,
+        trial_bound: 3,
+        enable_rho: false,
+        enable_p1: false,
+        ..cfg_quick()
+    };
     let n = BigUint::from(10403u32);
     let res = factorize(&n, &cfg).unwrap();
     assert_ne!(res.completeness, Completeness::Complete);
@@ -173,8 +179,10 @@ fn budget_exhaustion_partial() {
 
 #[test]
 fn zero_mr_rounds_rejected() {
-    let mut cfg = cfg_quick();
-    cfg.mr_rounds = 0;
+    let cfg = FactorJobConfig {
+        mr_rounds: 0,
+        ..cfg_quick()
+    };
     assert!(factorize(&BigUint::from(15u32), &cfg).is_err());
 }
 
