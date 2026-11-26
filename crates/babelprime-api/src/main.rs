@@ -1,8 +1,11 @@
 //! BabelPrime CLI.
 
-use babelprime_core::{factor_to_json, primality_to_json, verify_json, FactorJobConfig, VERSION};
+use babelprime_core::{
+    factor_to_json, primality_to_json, verify_json, FactorJobConfig, VERSION,
+};
 use clap::{Parser, Subcommand};
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::process;
 
 #[derive(Parser)]
@@ -18,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Factor an integer (decimal or 0x hex).
+    /// Factor an integer (decimal or 0x hex). Output is JSON.
     Factor {
         input: String,
         #[arg(long, default_value_t = 0xB4B31)]
@@ -35,18 +38,20 @@ enum Commands {
         ecm_b1: u64,
         #[arg(long, default_value_t = 20)]
         ecm_curves: u32,
-        #[arg(long, default_value_t = true)]
-        json: bool,
+        /// Write job checkpoint to this path on interruption (curve-boundary).
+        #[arg(long)]
+        checkpoint: Option<String>,
+        /// Resume from this checkpoint path (required to validate; no silent fresh start).
+        #[arg(long)]
+        resume: Option<String>,
     },
-    /// Test primality (Miller–Rabin).
+    /// Test primality (Miller–Rabin). Output is JSON.
     Primality {
         input: String,
         #[arg(long, default_value_t = 16)]
         rounds: u32,
         #[arg(long, default_value_t = 0xB4B31)]
         seed: u64,
-        #[arg(long, default_value_t = true)]
-        json: bool,
     },
     /// Verify a factorization JSON result (stdin or file).
     Verify {
@@ -69,7 +74,8 @@ fn main() {
             ecm,
             ecm_b1,
             ecm_curves,
-            json,
+            checkpoint,
+            resume,
         } => {
             let config = FactorJobConfig {
                 seed,
@@ -79,13 +85,12 @@ fn main() {
                 enable_ecm: ecm,
                 ecm_b1,
                 ecm_max_curves: ecm_curves,
+                checkpoint_path: checkpoint.map(PathBuf::from),
+                resume_path: resume.map(PathBuf::from),
                 ..Default::default()
             };
             match factor_to_json(&input, Some(config)) {
-                Ok(out) => {
-                    let _ = json;
-                    println!("{out}");
-                }
+                Ok(out) => println!("{out}"),
                 Err(e) => {
                     eprintln!("error: {e}");
                     process::exit(1);
@@ -96,7 +101,6 @@ fn main() {
             input,
             rounds,
             seed,
-            json: _,
         } => match primality_to_json(&input, rounds, seed) {
             Ok(out) => println!("{out}"),
             Err(e) => {
@@ -137,7 +141,9 @@ fn main() {
             println!(
                 "future (not operational): ecm_stage2, quadratic_sieve, gnfs, quantum_order_finding"
             );
-            println!("checkpoint/resume: available (curve-boundary; SHA-256 integrity)");
+            println!(
+                "checkpoint/resume: job-level + ECM curve-boundary; SHA-256 integrity"
+            );
         }
     }
 }
