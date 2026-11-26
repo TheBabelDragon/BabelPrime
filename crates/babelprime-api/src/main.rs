@@ -46,14 +46,7 @@ enum Commands {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Factor {
-            input,
-            seed,
-            timeout_ms,
-            budget,
-            mr_rounds,
-            json,
-        } => {
+        Commands::Factor { input, seed, timeout_ms, budget, mr_rounds, json } => {
             let config = FactorJobConfig {
                 seed,
                 timeout_ms,
@@ -89,20 +82,18 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Commands::Primality {
-            input,
-            rounds,
-            seed,
-        } => match primality_to_json(&input, rounds, seed) {
-            Ok(s) => {
-                println!("{s}");
-                ExitCode::SUCCESS
+        Commands::Primality { input, rounds, seed } => {
+            match primality_to_json(&input, rounds, seed) {
+                Ok(s) => {
+                    println!("{s}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
             }
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        },
+        }
         Commands::Verify { path } => {
             let text = match path {
                 Some(p) => std::fs::read_to_string(p).unwrap_or_else(|e| {
