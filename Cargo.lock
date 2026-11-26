@@ -152,11 +152,17 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn",
 ]
 
 [[package]]
 name = "clap_lex"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e82a6e4a9b47f3f6f67d0f1c4c6a2e6c9f9c6b8b8b8b8b8b8b8b8b8b8b8b8b8"
+checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
+
+[[package]]
+name = "colorchoice"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a06f01e6d5ad1e4e2b5ab8c49d6d7b0b8a7e6e6e0e1e0e0e0e0e0e0e0e0e0e0"
