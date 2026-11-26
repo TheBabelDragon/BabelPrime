@@ -166,7 +166,10 @@ impl State {
     }
 }
 
-pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationResult, FactorError> {
+pub fn factorize(
+    n: &BigUint,
+    config: &FactorJobConfig,
+) -> Result<FactorizationResult, FactorError> {
     if n < &BigUint::from(2u32) {
         return Err(FactorError::InvalidInput("input must be >= 2".into()));
     }
@@ -174,7 +177,8 @@ pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationR
         return Err(FactorError::InvalidInput("mr_rounds must be >= 1".into()));
     }
     let start = Instant::now();
-    let deadline = (config.timeout_ms > 0).then(|| start + Duration::from_millis(config.timeout_ms));
+    let deadline =
+        (config.timeout_ms > 0).then(|| start + Duration::from_millis(config.timeout_ms));
     let mut st = State::new(n.clone());
 
     while !st.remaining.bit(0) {
@@ -185,11 +189,7 @@ pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationR
         st.record("trial_division");
     }
 
-    let outcome = if st.remaining.is_one() {
-        Ok(())
-    } else {
-        decompose(&mut st, config, deadline)
-    };
+    let outcome = if st.remaining.is_one() { Ok(()) } else { decompose(&mut st, config, deadline) };
     let (timed_out, budget) = match outcome {
         Ok(()) => (false, false),
         Err(FactorError::Timeout) => (true, false),
@@ -199,7 +199,11 @@ pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationR
     finalize(st, config, start, timed_out, budget)
 }
 
-fn check(st: &State, config: &FactorJobConfig, deadline: Option<Instant>) -> Result<(), FactorError> {
+fn check(
+    st: &State,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<(), FactorError> {
     if let Some(dl) = deadline {
         if Instant::now() >= dl {
             return Err(FactorError::Timeout);
@@ -265,13 +269,9 @@ fn decompose(
     }
 
     if config.enable_rho {
-        if let Some(f) = rho(
-            &st.remaining,
-            config.seed.wrapping_add(st.ops),
-            &mut st.ops,
-            config,
-            deadline,
-        )? {
+        if let Some(f) =
+            rho(&st.remaining, config.seed.wrapping_add(st.ops), &mut st.ops, config, deadline)?
+        {
             st.record("pollard_rho");
             divide_out(st, &f, config, deadline)?;
             return decompose(st, config, deadline);
@@ -425,10 +425,7 @@ fn p1(
 fn is_prime_quick(n: &BigUint, config: &FactorJobConfig) -> bool {
     miller_rabin(n, config.mr_rounds.clamp(1, 8), config.seed)
         .map(|e| {
-            matches!(
-                e.status,
-                PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. }
-            )
+            matches!(e.status, PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. })
         })
         .unwrap_or(false)
 }
@@ -595,10 +592,7 @@ mod tests {
 
     #[test]
     fn zero_mr_rounds_rejected() {
-        let cfg = FactorJobConfig {
-            mr_rounds: 0,
-            ..Default::default()
-        };
+        let cfg = FactorJobConfig { mr_rounds: 0, ..Default::default() };
         assert!(factorize(&15u32.into(), &cfg).is_err());
     }
 
@@ -607,10 +601,7 @@ mod tests {
         let a = FactorJobConfig::default();
         let b = FactorJobConfig::default();
         assert_eq!(a.config_hash(), b.config_hash());
-        let c = FactorJobConfig {
-            seed: 99,
-            ..Default::default()
-        };
+        let c = FactorJobConfig { seed: 99, ..Default::default() };
         assert_ne!(a.config_hash(), c.config_hash());
     }
 }
