@@ -1,12 +1,12 @@
 //! Factorization algorithms and job engine for BabelPrime.
 
 use babelprime_arithmetic::{
-    bit_length, gcd, mod_pow, parse_integer, perfect_power, CanonicalInteger, ArithmeticError,
+    bit_length, gcd, mod_pow, parse_integer, perfect_power, ArithmeticError, CanonicalInteger,
 };
 use babelprime_primality::{miller_rabin, PrimalityStatus};
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -18,11 +18,19 @@ pub const ALGORITHM_VERSION: &str = "0.1.0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Completeness { Complete, Partial, Incomplete }
+pub enum Completeness {
+    Complete,
+    Partial,
+    Incomplete,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VerificationStatus { Verified, Failed, Partial }
+pub enum VerificationStatus {
+    Verified,
+    Failed,
+    Partial,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FactorPower {
@@ -345,7 +353,7 @@ fn rho(
         let mut y = x.clone();
         let mut d = BigUint::one();
         let f = |x: &BigUint| (x * x + &c) % n;
-        let max = (config.operation_budget / 10).max(1_000).min(100_000);
+        let max = (config.operation_budget / 10).clamp(1_000, 100_000);
         let mut steps = 0u64;
         while d.is_one() && steps < max {
             if config.operation_budget > 0 && *ops >= config.operation_budget {
@@ -390,7 +398,7 @@ fn p1(
     if a.is_zero() || a.is_one() {
         a = BigUint::from(2u32);
     }
-    let bound = config.trial_bound.max(1000).min(50_000);
+    let bound = config.trial_bound.clamp(1000, 50_000);
     for i in 2..=bound {
         if config.operation_budget > 0 && *ops >= config.operation_budget {
             return Err(FactorError::BudgetExhausted);
@@ -415,7 +423,7 @@ fn p1(
 }
 
 fn is_prime_quick(n: &BigUint, config: &FactorJobConfig) -> bool {
-    miller_rabin(n, config.mr_rounds.min(8).max(1), config.seed)
+    miller_rabin(n, config.mr_rounds.clamp(1, 8), config.seed)
         .map(|e| {
             matches!(
                 e.status,
@@ -538,10 +546,18 @@ pub fn factorize_str(
 }
 
 pub mod future {
-    pub fn ecm_available() -> bool { false }
-    pub fn quadratic_sieve_available() -> bool { false }
-    pub fn gnfs_available() -> bool { false }
-    pub fn quantum_order_finding_available() -> bool { false }
+    pub fn ecm_available() -> bool {
+        false
+    }
+    pub fn quadratic_sieve_available() -> bool {
+        false
+    }
+    pub fn gnfs_available() -> bool {
+        false
+    }
+    pub fn quantum_order_finding_available() -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -579,8 +595,10 @@ mod tests {
 
     #[test]
     fn zero_mr_rounds_rejected() {
-        let mut cfg = FactorJobConfig::default();
-        cfg.mr_rounds = 0;
+        let cfg = FactorJobConfig {
+            mr_rounds: 0,
+            ..Default::default()
+        };
         assert!(factorize(&15u32.into(), &cfg).is_err());
     }
 
@@ -589,8 +607,10 @@ mod tests {
         let a = FactorJobConfig::default();
         let b = FactorJobConfig::default();
         assert_eq!(a.config_hash(), b.config_hash());
-        let mut c = FactorJobConfig::default();
-        c.seed = 99;
+        let c = FactorJobConfig {
+            seed: 99,
+            ..Default::default()
+        };
         assert_ne!(a.config_hash(), c.config_hash());
     }
 }
