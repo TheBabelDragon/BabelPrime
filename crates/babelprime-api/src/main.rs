@@ -1,13 +1,15 @@
 //! BabelPrime CLI.
 
-use babelprime_core::{
-    factorize_str, primality_to_json, verify_result, FactorJobConfig, VERSION,
-};
+use babelprime_core::{factorize_str, primality_to_json, verify_result, FactorJobConfig, VERSION};
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "babelprime", version = VERSION, about = "Verifiable integer factorization and primality engine")]
+#[command(
+    name = "babelprime",
+    version = VERSION,
+    about = "Verifiable integer factorization and primality engine"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -44,9 +46,20 @@ enum Commands {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Factor { input, seed, timeout_ms, budget, mr_rounds, json } => {
+        Commands::Factor {
+            input,
+            seed,
+            timeout_ms,
+            budget,
+            mr_rounds,
+            json,
+        } => {
             let config = FactorJobConfig {
-                seed, timeout_ms, operation_budget: budget, mr_rounds, ..Default::default()
+                seed,
+                timeout_ms,
+                operation_budget: budget,
+                mr_rounds,
+                ..Default::default()
             };
             match factorize_str(&input, Some(config)) {
                 Ok(res) => {
@@ -60,24 +73,41 @@ fn main() -> ExitCode {
                                 }
                                 ExitCode::SUCCESS
                             }
-                            Err(e) => { eprintln!("json error: {e}"); ExitCode::FAILURE }
+                            Err(e) => {
+                                eprintln!("json error: {e}");
+                                ExitCode::FAILURE
+                            }
                         }
                     } else {
                         println!("{res:?}");
                         ExitCode::SUCCESS
                     }
                 }
-                Err(e) => { eprintln!("error: {e}"); ExitCode::FAILURE }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
             }
         }
-        Commands::Primality { input, rounds, seed } => match primality_to_json(&input, rounds, seed) {
-            Ok(s) => { println!("{s}"); ExitCode::SUCCESS }
-            Err(e) => { eprintln!("error: {e}"); ExitCode::FAILURE }
+        Commands::Primality {
+            input,
+            rounds,
+            seed,
+        } => match primality_to_json(&input, rounds, seed) {
+            Ok(s) => {
+                println!("{s}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
         },
         Commands::Verify { path } => {
             let text = match path {
                 Some(p) => std::fs::read_to_string(p).unwrap_or_else(|e| {
-                    eprintln!("read error: {e}"); std::process::exit(1);
+                    eprintln!("read error: {e}");
+                    std::process::exit(1);
                 }),
                 None => {
                     use std::io::Read;
@@ -87,14 +117,22 @@ fn main() -> ExitCode {
                 }
             };
             match babelprime_core::verify_json(&text) {
-                Ok(()) => { println!("OK"); ExitCode::SUCCESS }
-                Err(e) => { eprintln!("FAIL: {e}"); ExitCode::FAILURE }
+                Ok(()) => {
+                    println!("OK");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("FAIL: {e}");
+                    ExitCode::FAILURE
+                }
             }
         }
         Commands::Info => {
             println!("BabelPrime {VERSION}");
             println!("schema_version: {}", babelprime_core::SCHEMA_VERSION);
-            println!("algorithms: trial_division, perfect_power, miller_rabin, pollard_rho, pollard_p1");
+            println!(
+                "algorithms: trial_division, perfect_power, miller_rabin, pollard_rho, pollard_p1"
+            );
             println!("future (not operational): ecm, quadratic_sieve, gnfs, quantum_order_finding");
             ExitCode::SUCCESS
         }
