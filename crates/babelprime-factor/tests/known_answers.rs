@@ -82,11 +82,7 @@ fn factor_91() {
     assert_eq!(res.completeness, Completeness::Complete);
     assert_eq!(res.verification_status, VerificationStatus::Verified);
     assert!(product_matches(&res, &n));
-    let primes: Vec<_> = res
-        .discovered_factors
-        .iter()
-        .map(|f| f.prime.as_str())
-        .collect();
+    let primes: Vec<_> = res.discovered_factors.iter().map(|f| f.prime.as_str()).collect();
     assert!(primes.contains(&"7"));
     assert!(primes.contains(&"13"));
 }
@@ -179,19 +175,13 @@ fn budget_exhaustion_partial() {
 
 #[test]
 fn zero_mr_rounds_rejected() {
-    let cfg = FactorJobConfig {
-        mr_rounds: 0,
-        ..cfg_quick()
-    };
+    let cfg = FactorJobConfig { mr_rounds: 0, ..cfg_quick() };
     assert!(factorize(&BigUint::from(15u32), &cfg).is_err());
 }
 
 #[test]
 fn deterministic_repeatability() {
-    let cfg = FactorJobConfig {
-        seed: 12345,
-        ..cfg_quick()
-    };
+    let cfg = FactorJobConfig { seed: 12345, ..cfg_quick() };
     let a = factorize(&BigUint::from(8051u32), &cfg).unwrap();
     let b = factorize(&BigUint::from(8051u32), &cfg).unwrap();
     assert_eq!(a.discovered_factors.len(), b.discovered_factors.len());
@@ -199,21 +189,12 @@ fn deterministic_repeatability() {
         assert_eq!(fa.prime.as_str(), fb.prime.as_str());
         assert_eq!(fa.exponent, fb.exponent);
     }
-    assert_eq!(
-        a.reproducibility_metadata.config_hash,
-        b.reproducibility_metadata.config_hash
-    );
+    assert_eq!(a.reproducibility_metadata.config_hash, b.reproducibility_metadata.config_hash);
 }
 
 #[test]
 fn config_hash_differs_with_seed() {
-    let a = FactorJobConfig {
-        seed: 1,
-        ..cfg_quick()
-    };
-    let b = FactorJobConfig {
-        seed: 2,
-        ..cfg_quick()
-    };
+    let a = FactorJobConfig { seed: 1, ..cfg_quick() };
+    let b = FactorJobConfig { seed: 2, ..cfg_quick() };
     assert_ne!(a.config_hash(), b.config_hash());
 }
