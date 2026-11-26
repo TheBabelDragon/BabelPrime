@@ -94,7 +94,9 @@ pub fn verify_result(result: &FactorizationResult) -> Result<(), VerifyError> {
                 return Err(VerifyError::Failed("complete but has remaining_cofactor".into()));
             }
             if result.verification_status != VerificationStatus::Verified {
-                return Err(VerifyError::Failed("complete requires verification_status=verified".into()));
+                return Err(VerifyError::Failed(
+                    "complete requires verification_status=verified".into(),
+                ));
             }
             if result.discovered_factors.is_empty() {
                 return Err(VerifyError::Failed("complete factorization has no factors".into()));
