@@ -57,7 +57,11 @@ pub fn mod_inverse(a: &BigUint, m: &BigUint) -> Option<BigUint> {
     (((x % &mi) + &mi) % &mi).to_biguint()
 }
 
-pub fn mod_pow(base: &BigUint, exp: &BigUint, modulus: &BigUint) -> Result<BigUint, ArithmeticError> {
+pub fn mod_pow(
+    base: &BigUint,
+    exp: &BigUint,
+    modulus: &BigUint,
+) -> Result<BigUint, ArithmeticError> {
     if modulus.is_zero() {
         return Err(ArithmeticError::NonPositiveModulus);
     }
@@ -118,7 +122,7 @@ fn integer_nth_root(n: &BigUint, e: u32) -> Option<BigUint> {
     }
     let mut lo = BigUint::one();
     let mut hi = n.clone();
-    while &lo < &hi {
+    while lo < hi {
         let mid = (&lo + &hi + BigUint::one()) >> 1u32;
         if pow_u32(&mid, e) <= *n {
             lo = mid;
