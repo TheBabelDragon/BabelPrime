@@ -12,6 +12,8 @@ babelprime-arithmetic = { workspace = true }
 babelprime-primality = { workspace = true }
 babelprime-factor = { workspace = true }
 babelprime-verify = { workspace = true }
+babelprime-checkpoint = { workspace = true }
+babelprime-ecm = { workspace = true }
 num-bigint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

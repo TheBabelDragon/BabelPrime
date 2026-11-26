@@ -10,6 +10,8 @@ description = "Factorization algorithms and job engine for BabelPrime"
 [dependencies]
 babelprime-arithmetic = { workspace = true }
 babelprime-primality = { workspace = true }
+babelprime-ecm = { workspace = true }
+babelprime-checkpoint = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 serde = { workspace = true }
