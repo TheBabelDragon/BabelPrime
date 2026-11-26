@@ -5,13 +5,15 @@ members = [
     "crates/babelprime-primality",
     "crates/babelprime-factor",
     "crates/babelprime-verify",
+    "crates/babelprime-checkpoint",
+    "crates/babelprime-ecm",
     "crates/babelprime-core",
     "crates/babelprime-api",
 ]
 default-members = ["crates/babelprime-core", "crates/babelprime-api"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/TheBabelDragon/BabelPrime"
@@ -27,11 +29,13 @@ thiserror = "1.0"
 rand = "0.8"
 rand_chacha = "0.3"
 
-babelprime-arithmetic = { path = "crates/babelprime-arithmetic", version = "0.1.0" }
-babelprime-primality = { path = "crates/babelprime-primality", version = "0.1.0" }
-babelprime-factor = { path = "crates/babelprime-factor", version = "0.1.0" }
-babelprime-verify = { path = "crates/babelprime-verify", version = "0.1.0" }
-babelprime-core = { path = "crates/babelprime-core", version = "0.1.0" }
+babelprime-arithmetic = { path = "crates/babelprime-arithmetic", version = "0.2.0" }
+babelprime-primality = { path = "crates/babelprime-primality", version = "0.2.0" }
+babelprime-factor = { path = "crates/babelprime-factor", version = "0.2.0" }
+babelprime-verify = { path = "crates/babelprime-verify", version = "0.2.0" }
+babelprime-checkpoint = { path = "crates/babelprime-checkpoint", version = "0.2.0" }
+babelprime-ecm = { path = "crates/babelprime-ecm", version = "0.2.0" }
+babelprime-core = { path = "crates/babelprime-core", version = "0.2.0" }
 
 [profile.release]
 lto = true
