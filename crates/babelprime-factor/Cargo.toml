@@ -16,7 +16,6 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-log = { workspace = true }
 
 [dev-dependencies]
 num-bigint = { workspace = true }
