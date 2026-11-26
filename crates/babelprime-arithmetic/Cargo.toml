@@ -1,0 +1,15 @@
+[package]
+name = "babelprime-arithmetic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Arbitrary-precision integer arithmetic primitives for BabelPrime"
+
+[dependencies]
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+num-integer = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

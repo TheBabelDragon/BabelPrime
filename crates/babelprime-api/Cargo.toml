@@ -1,0 +1,18 @@
+[package]
+name = "babelprime-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "CLI and thin API surface for BabelPrime"
+
+[[bin]]
+name = "babelprime"
+path = "src/main.rs"
+
+[dependencies]
+babelprime-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4.4", features = ["derive"] }
