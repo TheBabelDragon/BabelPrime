@@ -17,3 +17,6 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+babelprime-verify = { workspace = true }
