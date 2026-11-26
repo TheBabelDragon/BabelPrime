@@ -90,9 +90,12 @@ pub struct FactorJobConfig {
     pub ecm_b1: u64,
     /// Maximum ECM curves to attempt.
     pub ecm_max_curves: u32,
-    /// Optional path for job checkpoints (curve-boundary granularity for ECM).
+    /// Optional path for writing job checkpoints (curve-boundary for ECM).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_path: Option<PathBuf>,
+    /// Optional path to resume from. Required validation; failure does not start fresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_path: Option<PathBuf>,
     /// Write a checkpoint at least every this many estimated operations when set.
     #[serde(default)]
     pub checkpoint_interval_ops: u64,
@@ -113,6 +116,7 @@ impl Default for FactorJobConfig {
             ecm_b1: 2_000,
             ecm_max_curves: 20,
             checkpoint_path: None,
+            resume_path: None,
             checkpoint_interval_ops: 50_000,
             max_depth: 32,
         }
@@ -121,7 +125,7 @@ impl Default for FactorJobConfig {
 
 impl FactorJobConfig {
     /// Collision-resistant identity of the full normalized configuration (SHA-256).
-    /// Not a secret MAC; checkpoint_path is excluded (does not change mathematics).
+    /// Not a secret MAC; checkpoint_path/resume_path are excluded.
     pub fn config_hash(&self) -> String {
         let encoded = format!(
             "v={}|seed={}|timeout={}|budget={}|mr={}|trial={}|rho={}|p1={}|ecm={}|b1={}|curves={}|depth={}",
@@ -191,31 +195,101 @@ pub fn factorize(
     if config.mr_rounds == 0 {
         return Err(FactorError::InvalidInput("mr_rounds must be >= 1".into()));
     }
+
     let start = Instant::now();
     let deadline =
         (config.timeout_ms > 0).then(|| start + Duration::from_millis(config.timeout_ms));
-    let mut st = State::new(n.clone());
+    let input_canon = n.to_str_radix(10);
 
-    while !st.remaining.bit(0) {
-        check(&st, config, deadline)?;
-        *st.factors.entry(2u32.into()).or_insert(0) += 1;
-        st.remaining >>= 1u32;
-        st.ops += 1;
-        st.record("trial_division");
+    let mut st = State::new(n.clone());
+    let mut resume_ecm: Option<EcmCheckpointState> = None;
+
+    // Job-level resume: when resume_path is set, checkpoint is required.
+    // Never silently start a fresh job on failure.
+    if let Some(ref rpath) = config.resume_path {
+        let env = load_job_checkpoint(rpath, &input_canon, config)?;
+        st.ops = env.operations_consumed;
+        st.remaining = parse_integer(&env.state.remaining)
+            .map_err(|e| FactorError::InvalidInput(format!("checkpoint remaining: {e}")))?;
+        st.factors.clear();
+        for (p_s, exp) in &env.state.factors {
+            let p = parse_integer(p_s)
+                .map_err(|err| FactorError::InvalidInput(format!("checkpoint factor: {err}")))?;
+            *st.factors.entry(p).or_insert(0) += *exp;
+        }
+        st.algorithms = env.state.algorithms_used.clone();
+        if let Some(ref ecm) = env.state.ecm {
+            validate_ecm_checkpoint(ecm, config)?;
+            resume_ecm = Some(ecm.clone());
+        }
+    } else {
+        while !st.remaining.bit(0) {
+            check(&st, config, deadline)?;
+            *st.factors.entry(2u32.into()).or_insert(0) += 1;
+            st.remaining >>= 1u32;
+            st.ops += 1;
+            st.record("trial_division");
+        }
     }
 
     let outcome = if st.remaining.is_one() {
         Ok(())
     } else {
-        decompose(&mut st, config, deadline)
+        decompose(&mut st, config, deadline, resume_ecm)
     };
-    let (timed_out, budget) = match outcome {
+
+    let (timed_out, budget_hit) = match outcome {
         Ok(()) => (false, false),
         Err(FactorError::Timeout) => (true, false),
         Err(FactorError::BudgetExhausted) => (false, true),
         Err(e) => return Err(e),
     };
-    finalize(st, config, start, timed_out, budget)
+
+    if timed_out || budget_hit {
+        if let Some(ref path) = config.checkpoint_path {
+            let _ = save_job_checkpoint(
+                path,
+                &input_canon,
+                config,
+                &st.remaining,
+                &st.factors,
+                &st.algorithms,
+                st.ops,
+                None,
+            );
+        }
+    }
+
+    finalize(st, config, start, timed_out, budget_hit)
+}
+
+fn validate_ecm_checkpoint(
+    ecm: &EcmCheckpointState,
+    config: &FactorJobConfig,
+) -> Result<(), FactorError> {
+    if ecm.b1 != config.ecm_b1 {
+        return Err(FactorError::InvalidInput(format!(
+            "ECM checkpoint B1 {} != config {}",
+            ecm.b1, config.ecm_b1
+        )));
+    }
+    if ecm.max_curves != config.ecm_max_curves {
+        return Err(FactorError::InvalidInput(format!(
+            "ECM checkpoint max_curves {} != config {}",
+            ecm.max_curves, config.ecm_max_curves
+        )));
+    }
+    if ecm.next_curve > ecm.max_curves || ecm.curves_completed > ecm.max_curves {
+        return Err(FactorError::InvalidInput(
+            "ECM checkpoint curve counters out of bounds".into(),
+        ));
+    }
+    if ecm.curves_completed > ecm.next_curve {
+        return Err(FactorError::InvalidInput(
+            "ECM checkpoint: curves_completed > next_curve".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn check(
@@ -238,6 +312,7 @@ fn decompose(
     st: &mut State,
     config: &FactorJobConfig,
     deadline: Option<Instant>,
+    resume_ecm: Option<EcmCheckpointState>,
 ) -> Result<(), FactorError> {
     check(st, config, deadline)?;
     if st.remaining.is_one() {
@@ -255,7 +330,7 @@ fn decompose(
         let mut sub = State::new(base);
         sub.depth = st.depth + 1;
         sub.ops = st.ops;
-        decompose(&mut sub, config, deadline)?;
+        decompose(&mut sub, config, deadline, None)?;
         for (p, e) in sub.factors {
             *st.factors.entry(p).or_insert(0) += e * exp;
         }
@@ -284,7 +359,7 @@ fn decompose(
     if let Some(f) = trial(&st.remaining, config.trial_bound, &mut st.ops, config, deadline)? {
         st.record("trial_division");
         divide_out(st, &f, config, deadline)?;
-        return decompose(st, config, deadline);
+        return decompose(st, config, deadline, None);
     }
 
     if config.enable_rho {
@@ -293,7 +368,7 @@ fn decompose(
         {
             st.record("pollard_rho");
             divide_out(st, &f, config, deadline)?;
-            return decompose(st, config, deadline);
+            return decompose(st, config, deadline, None);
         }
     }
 
@@ -301,15 +376,16 @@ fn decompose(
         if let Some(f) = p1(&st.remaining, config.seed, &mut st.ops, config, deadline)? {
             st.record("pollard_p1");
             divide_out(st, &f, config, deadline)?;
-            return decompose(st, config, deadline);
+            return decompose(st, config, deadline, None);
         }
     }
 
     if config.enable_ecm {
-        if let Some(f) = run_ecm(st, config, deadline)? {
+        let ecm_resume = resume_ecm;
+        if let Some(f) = run_ecm(st, config, deadline, ecm_resume)? {
             st.record("ecm_stage1");
             divide_out(st, &f, config, deadline)?;
-            return decompose(st, config, deadline);
+            return decompose(st, config, deadline, None);
         }
     }
 
@@ -464,17 +540,16 @@ fn run_ecm(
     st: &mut State,
     config: &FactorJobConfig,
     deadline: Option<Instant>,
+    resume_ecm: Option<EcmCheckpointState>,
 ) -> Result<Option<BigUint>, FactorError> {
     let params = EcmParams {
         b1: config.ecm_b1,
         max_curves: config.ecm_max_curves,
         seed: config.seed ^ 0xEC11,
     };
-    let remaining_budget = if config.operation_budget > 0 {
-        config.operation_budget.saturating_sub(st.ops)
-    } else {
-        0
-    };
+    // Absolute job budget: ECM compares cumulative ops (ops_base + work) against
+    // config.operation_budget (0 = unlimited).
+    let absolute_budget = config.operation_budget;
     let timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
     let input = st.remaining.to_str_radix(10);
     let ckpt_cfg = config.checkpoint_path.as_ref().map(|p| CheckpointConfig {
@@ -488,10 +563,10 @@ fn run_ecm(
     let outcome = ecm_stage1(
         &st.remaining,
         &params,
-        remaining_budget,
+        absolute_budget,
         timeout,
         ckpt_cfg.as_ref(),
-        None,
+        resume_ecm,
         st.ops,
         &input,
         &config.config_hash(),
@@ -500,13 +575,15 @@ fn run_ecm(
     match outcome {
         EcmOutcome::Factor(f) => {
             if f <= BigUint::one() || f >= st.remaining || &st.remaining % &f != BigUint::zero() {
-                return Err(FactorError::InvalidInput("ECM returned invalid factor".into()));
+                return Err(FactorError::InvalidInput(
+                    "ECM returned invalid factor".into(),
+                ));
             }
             Ok(Some(f))
         }
         EcmOutcome::NoFactor { operations, .. }
         | EcmOutcome::Interrupted { operations, .. } => {
-            st.ops = operations;
+            st.ops = operations.max(st.ops);
             Ok(None)
         }
     }
@@ -759,7 +836,7 @@ mod tests {
         let a = FactorJobConfig::default();
         let b = FactorJobConfig::default();
         assert_eq!(a.config_hash(), b.config_hash());
-        assert_eq!(a.config_hash().len(), 64); // SHA-256 hex
+        assert_eq!(a.config_hash().len(), 64);
         let c = FactorJobConfig {
             seed: 99,
             ..Default::default()
@@ -817,5 +894,56 @@ mod tests {
             .algorithms_used
             .iter()
             .any(|a| a.contains("ecm")));
+    }
+
+    #[test]
+    fn job_checkpoint_resume_rejects_wrong_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("job.ckpt");
+        let cfg = FactorJobConfig {
+            checkpoint_path: Some(path.clone()),
+            operation_budget: 5,
+            enable_ecm: false,
+            enable_rho: false,
+            enable_p1: false,
+            trial_bound: 1_000_000,
+            ..Default::default()
+        };
+        save_job_checkpoint(
+            &path,
+            "15",
+            &cfg,
+            &BigUint::from(15u32),
+            &BTreeMap::new(),
+            &[],
+            3,
+            None,
+        )
+        .unwrap();
+        let bad = FactorJobConfig {
+            resume_path: Some(path),
+            ..cfg
+        };
+        assert!(factorize(&BigUint::from(21u32), &bad).is_err());
+    }
+
+    #[test]
+    fn absolute_budget_respected() {
+        let n = BigUint::from(455839u32);
+        let cfg = FactorJobConfig {
+            enable_rho: false,
+            enable_p1: false,
+            enable_ecm: true,
+            ecm_b1: 500,
+            ecm_max_curves: 50,
+            trial_bound: 10,
+            operation_budget: 100,
+            seed: 3,
+            ..Default::default()
+        };
+        let res = factorize(&n, &cfg).unwrap();
+        if res.execution_metadata.budget_exhausted {
+            assert_ne!(res.completeness, Completeness::Complete);
+        }
     }
 }
