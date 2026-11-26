@@ -91,22 +91,32 @@ impl Default for FactorJobConfig {
 }
 
 impl FactorJobConfig {
-    /// Deterministic identity of the full configuration.
+    /// Platform-stable identity of the full normalized configuration.
+    /// Uses FNV-1a 64 over a canonical field encoding (not DefaultHasher).
     pub fn config_hash(&self) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        self.seed.hash(&mut h);
-        self.timeout_ms.hash(&mut h);
-        self.operation_budget.hash(&mut h);
-        self.mr_rounds.hash(&mut h);
-        self.trial_bound.hash(&mut h);
-        self.enable_rho.hash(&mut h);
-        self.enable_p1.hash(&mut h);
-        self.max_depth.hash(&mut h);
-        ALGORITHM_VERSION.hash(&mut h);
-        format!("{:016x}", h.finish())
+        let encoded = format!(
+            "v={}|seed={}|timeout={}|budget={}|mr={}|trial={}|rho={}|p1={}|depth={}",
+            ALGORITHM_VERSION,
+            self.seed,
+            self.timeout_ms,
+            self.operation_budget,
+            self.mr_rounds,
+            self.trial_bound,
+            self.enable_rho as u8,
+            self.enable_p1 as u8,
+            self.max_depth,
+        );
+        format!("{:016x}", fnv1a64(encoded.as_bytes()))
     }
+}
+
+fn fnv1a64(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in data {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 #[derive(Debug, Error)]
@@ -153,15 +163,12 @@ pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationR
         return Err(FactorError::InvalidInput("input must be >= 2".into()));
     }
     if config.mr_rounds == 0 {
-        return Err(FactorError::InvalidInput(
-            "mr_rounds must be >= 1".into(),
-        ));
+        return Err(FactorError::InvalidInput("mr_rounds must be >= 1".into()));
     }
     let start = Instant::now();
     let deadline = (config.timeout_ms > 0).then(|| start + Duration::from_millis(config.timeout_ms));
     let mut st = State::new(n.clone());
 
-    // Factor out 2s with budget checks
     while !st.remaining.bit(0) {
         check(&st, config, deadline)?;
         *st.factors.entry(2u32.into()).or_insert(0) += 1;
@@ -209,7 +216,6 @@ fn decompose(
         return Err(FactorError::BudgetExhausted);
     }
 
-    // Perfect power (ops charged before expensive work)
     st.ops += 10;
     check(st, config, deadline)?;
     if let Some((base, exp)) = perfect_power(&st.remaining) {
@@ -305,7 +311,6 @@ fn trial(
     let upper = n.sqrt() + BigUint::one();
     let upper = if limit < upper { limit } else { upper };
     while d <= upper {
-        // Lightweight State view for budget
         if config.operation_budget > 0 && *ops >= config.operation_budget {
             return Err(FactorError::BudgetExhausted);
         }
@@ -334,8 +339,7 @@ fn rho(
         return Ok(Some(2u32.into()));
     }
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    // Bounded retries with different constants
-    for attempt in 0u64..4 {
+    for _attempt in 0u64..4 {
         let c = BigUint::from(rng.gen_range(1u64..1000));
         let mut x = BigUint::from(rng.gen_range(2u64..10_000));
         let mut y = x.clone();
@@ -362,8 +366,6 @@ fn rho(
         if !d.is_one() && &d != n {
             return Ok(Some(d));
         }
-        // retry with new seed material
-        let _ = attempt;
     }
     Ok(None)
 }
@@ -376,7 +378,6 @@ fn p1(
     deadline: Option<Instant>,
 ) -> Result<Option<BigUint>, FactorError> {
     let mut rng = ChaCha20Rng::seed_from_u64(seed ^ 0x5041);
-    // Choose base in [2, n-2] when possible; fall back to small range
     let a0 = if n > &BigUint::from(4u32) {
         let range = n - BigUint::from(3u32);
         let mut bytes = vec![0u8; (range.bits() as usize / 8) + 2];
@@ -400,11 +401,10 @@ fn p1(
             }
         }
         a = mod_pow(&a, &BigUint::from(i), n)?;
-        // Guard underflow: only compute a-1 when a >= 1
         if a.is_zero() {
             continue;
         }
-        let am1 = &a - BigUint::one(); // a >= 1 here
+        let am1 = &a - BigUint::one();
         let g = gcd(&am1, n);
         *ops += 5;
         if g > BigUint::one() && &g < n {
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn factor_251_squared() {
-        let n = BigUint::from(63001u32); // 251²
+        let n = BigUint::from(63001u32);
         let res = factorize(&n, &FactorJobConfig::default()).unwrap();
         assert_eq!(res.completeness, Completeness::Complete);
         assert_eq!(res.discovered_factors.len(), 1);
