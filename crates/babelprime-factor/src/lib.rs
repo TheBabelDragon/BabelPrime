@@ -45,6 +45,7 @@ pub struct ExecutionMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReproducibilityMetadata {
     pub seed: u64,
+    /// Hash of the full normalized configuration (not wall-clock).
     pub config_hash: String,
 }
 
@@ -89,6 +90,25 @@ impl Default for FactorJobConfig {
     }
 }
 
+impl FactorJobConfig {
+    /// Deterministic identity of the full configuration.
+    pub fn config_hash(&self) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        self.seed.hash(&mut h);
+        self.timeout_ms.hash(&mut h);
+        self.operation_budget.hash(&mut h);
+        self.mr_rounds.hash(&mut h);
+        self.trial_bound.hash(&mut h);
+        self.enable_rho.hash(&mut h);
+        self.enable_p1.hash(&mut h);
+        self.max_depth.hash(&mut h);
+        ALGORITHM_VERSION.hash(&mut h);
+        format!("{:016x}", h.finish())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum FactorError {
     #[error(transparent)]
@@ -112,7 +132,14 @@ struct State {
 
 impl State {
     fn new(n: BigUint) -> Self {
-        Self { original: n.clone(), remaining: n, factors: BTreeMap::new(), ops: 0, depth: 0, algorithms: Vec::new() }
+        Self {
+            original: n.clone(),
+            remaining: n,
+            factors: BTreeMap::new(),
+            ops: 0,
+            depth: 0,
+            algorithms: Vec::new(),
+        }
     }
     fn record(&mut self, name: &str) {
         if !self.algorithms.iter().any(|a| a == name) {
@@ -125,18 +152,29 @@ pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationR
     if n < &BigUint::from(2u32) {
         return Err(FactorError::InvalidInput("input must be >= 2".into()));
     }
+    if config.mr_rounds == 0 {
+        return Err(FactorError::InvalidInput(
+            "mr_rounds must be >= 1".into(),
+        ));
+    }
     let start = Instant::now();
     let deadline = (config.timeout_ms > 0).then(|| start + Duration::from_millis(config.timeout_ms));
     let mut st = State::new(n.clone());
 
+    // Factor out 2s with budget checks
     while !st.remaining.bit(0) {
+        check(&st, config, deadline)?;
         *st.factors.entry(2u32.into()).or_insert(0) += 1;
         st.remaining >>= 1u32;
         st.ops += 1;
         st.record("trial_division");
     }
 
-    let outcome = if st.remaining.is_one() { Ok(()) } else { decompose(&mut st, config, deadline) };
+    let outcome = if st.remaining.is_one() {
+        Ok(())
+    } else {
+        decompose(&mut st, config, deadline)
+    };
     let (timed_out, budget) = match outcome {
         Ok(()) => (false, false),
         Err(FactorError::Timeout) => (true, false),
@@ -148,7 +186,9 @@ pub fn factorize(n: &BigUint, config: &FactorJobConfig) -> Result<FactorizationR
 
 fn check(st: &State, config: &FactorJobConfig, deadline: Option<Instant>) -> Result<(), FactorError> {
     if let Some(dl) = deadline {
-        if Instant::now() >= dl { return Err(FactorError::Timeout); }
+        if Instant::now() >= dl {
+            return Err(FactorError::Timeout);
+        }
     }
     if config.operation_budget > 0 && st.ops >= config.operation_budget {
         return Err(FactorError::BudgetExhausted);
@@ -156,28 +196,44 @@ fn check(st: &State, config: &FactorJobConfig, deadline: Option<Instant>) -> Res
     Ok(())
 }
 
-fn decompose(st: &mut State, config: &FactorJobConfig, deadline: Option<Instant>) -> Result<(), FactorError> {
+fn decompose(
+    st: &mut State,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<(), FactorError> {
     check(st, config, deadline)?;
-    if st.remaining.is_one() { return Ok(()); }
-    if st.depth >= config.max_depth { return Err(FactorError::BudgetExhausted); }
+    if st.remaining.is_one() {
+        return Ok(());
+    }
+    if st.depth >= config.max_depth {
+        return Err(FactorError::BudgetExhausted);
+    }
 
+    // Perfect power (ops charged before expensive work)
+    st.ops += 10;
+    check(st, config, deadline)?;
     if let Some((base, exp)) = perfect_power(&st.remaining) {
         st.record("perfect_power");
-        st.ops += 50;
+        st.ops += 40;
         let mut sub = State::new(base);
         sub.depth = st.depth + 1;
         sub.ops = st.ops;
         decompose(&mut sub, config, deadline)?;
-        for (p, e) in sub.factors { *st.factors.entry(p).or_insert(0) += e * exp; }
+        for (p, e) in sub.factors {
+            *st.factors.entry(p).or_insert(0) += e * exp;
+        }
         st.remaining = BigUint::one();
         st.ops = sub.ops;
-        for a in sub.algorithms { st.record(&a); }
+        for a in sub.algorithms {
+            st.record(&a);
+        }
         return Ok(());
     }
 
     let ev = miller_rabin(&st.remaining, config.mr_rounds, config.seed)
         .map_err(|e| FactorError::Arithmetic(ArithmeticError::InvalidInput(e.to_string())))?;
     st.ops += config.mr_rounds as u64 * 5;
+    check(st, config, deadline)?;
     match ev.status {
         PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. } => {
             *st.factors.entry(st.remaining.clone()).or_insert(0) += 1;
@@ -188,16 +244,22 @@ fn decompose(st: &mut State, config: &FactorJobConfig, deadline: Option<Instant>
         _ => {}
     }
 
-    if let Some(f) = trial(&st.remaining, config.trial_bound, &mut st.ops) {
+    if let Some(f) = trial(&st.remaining, config.trial_bound, &mut st.ops, config, deadline)? {
         st.record("trial_division");
-        divide_out(st, &f);
+        divide_out(st, &f, config, deadline)?;
         return decompose(st, config, deadline);
     }
 
     if config.enable_rho {
-        if let Some(f) = rho(&st.remaining, config.seed.wrapping_add(st.ops), &mut st.ops, config, deadline)? {
+        if let Some(f) = rho(
+            &st.remaining,
+            config.seed.wrapping_add(st.ops),
+            &mut st.ops,
+            config,
+            deadline,
+        )? {
             st.record("pollard_rho");
-            divide_out(st, &f);
+            divide_out(st, &f, config, deadline)?;
             return decompose(st, config, deadline);
         }
     }
@@ -205,7 +267,7 @@ fn decompose(st: &mut State, config: &FactorJobConfig, deadline: Option<Instant>
     if config.enable_p1 {
         if let Some(f) = p1(&st.remaining, config.seed, &mut st.ops, config, deadline)? {
             st.record("pollard_p1");
-            divide_out(st, &f);
+            divide_out(st, &f, config, deadline)?;
             return decompose(st, config, deadline);
         }
     }
@@ -213,91 +275,197 @@ fn decompose(st: &mut State, config: &FactorJobConfig, deadline: Option<Instant>
     Ok(())
 }
 
-fn divide_out(st: &mut State, f: &BigUint) {
-    if f.is_one() || f >= &st.remaining { return; }
+fn divide_out(
+    st: &mut State,
+    f: &BigUint,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<(), FactorError> {
+    if f.is_one() || f >= &st.remaining {
+        return Ok(());
+    }
     while &st.remaining % f == BigUint::zero() {
+        check(st, config, deadline)?;
         *st.factors.entry(f.clone()).or_insert(0) += 1;
         st.remaining /= f;
         st.ops += 1;
     }
+    Ok(())
 }
 
-fn trial(n: &BigUint, bound: u64, ops: &mut u64) -> Option<BigUint> {
+fn trial(
+    n: &BigUint,
+    bound: u64,
+    ops: &mut u64,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<Option<BigUint>, FactorError> {
     let mut d = BigUint::from(3u32);
     let limit = BigUint::from(bound);
     let upper = n.sqrt() + BigUint::one();
     let upper = if limit < upper { limit } else { upper };
     while d <= upper {
+        // Lightweight State view for budget
+        if config.operation_budget > 0 && *ops >= config.operation_budget {
+            return Err(FactorError::BudgetExhausted);
+        }
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                return Err(FactorError::Timeout);
+            }
+        }
         *ops += 1;
-        if n % &d == BigUint::zero() { return Some(d); }
+        if n % &d == BigUint::zero() {
+            return Ok(Some(d));
+        }
         d += 2u32;
     }
-    None
+    Ok(None)
 }
 
-fn rho(n: &BigUint, seed: u64, ops: &mut u64, config: &FactorJobConfig, deadline: Option<Instant>) -> Result<Option<BigUint>, FactorError> {
-    if !n.bit(0) { return Ok(Some(2u32.into())); }
-    let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    let c = BigUint::from(rng.gen_range(1u64..1000));
-    let mut x = BigUint::from(rng.gen_range(2u64..10_000));
-    let mut y = x.clone();
-    let mut d = BigUint::one();
-    let f = |x: &BigUint| (x * x + &c) % n;
-    let max = (config.operation_budget / 10).max(10_000);
-    let mut steps = 0u64;
-    while d.is_one() && steps < max {
-        if let Some(dl) = deadline { if Instant::now() >= dl { return Err(FactorError::Timeout); } }
-        x = f(&x);
-        y = f(&f(&y));
-        let diff = if x > y { &x - &y } else { &y - &x };
-        d = gcd(&diff, n);
-        *ops += 3;
-        steps += 1;
+fn rho(
+    n: &BigUint,
+    seed: u64,
+    ops: &mut u64,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<Option<BigUint>, FactorError> {
+    if !n.bit(0) {
+        return Ok(Some(2u32.into()));
     }
-    if d.is_one() || &d == n { Ok(None) } else { Ok(Some(d)) }
+    let mut rng = ChaCha20Rng::seed_from_u64(seed);
+    // Bounded retries with different constants
+    for attempt in 0u64..4 {
+        let c = BigUint::from(rng.gen_range(1u64..1000));
+        let mut x = BigUint::from(rng.gen_range(2u64..10_000));
+        let mut y = x.clone();
+        let mut d = BigUint::one();
+        let f = |x: &BigUint| (x * x + &c) % n;
+        let max = (config.operation_budget / 10).max(1_000).min(100_000);
+        let mut steps = 0u64;
+        while d.is_one() && steps < max {
+            if config.operation_budget > 0 && *ops >= config.operation_budget {
+                return Err(FactorError::BudgetExhausted);
+            }
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    return Err(FactorError::Timeout);
+                }
+            }
+            x = f(&x);
+            y = f(&f(&y));
+            let diff = if x > y { &x - &y } else { &y - &x };
+            d = gcd(&diff, n);
+            *ops += 3;
+            steps += 1;
+        }
+        if !d.is_one() && &d != n {
+            return Ok(Some(d));
+        }
+        // retry with new seed material
+        let _ = attempt;
+    }
+    Ok(None)
 }
 
-fn p1(n: &BigUint, seed: u64, ops: &mut u64, config: &FactorJobConfig, deadline: Option<Instant>) -> Result<Option<BigUint>, FactorError> {
+fn p1(
+    n: &BigUint,
+    seed: u64,
+    ops: &mut u64,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<Option<BigUint>, FactorError> {
     let mut rng = ChaCha20Rng::seed_from_u64(seed ^ 0x5041);
-    let mut a = BigUint::from(rng.gen_range(2u64..1000));
-    let bound = config.trial_bound.max(1000);
+    // Choose base in [2, n-2] when possible; fall back to small range
+    let a0 = if n > &BigUint::from(4u32) {
+        let range = n - BigUint::from(3u32);
+        let mut bytes = vec![0u8; (range.bits() as usize / 8) + 2];
+        rng.fill_bytes(&mut bytes);
+        BigUint::from_bytes_be(&bytes) % &range + BigUint::from(2u32)
+    } else {
+        BigUint::from(2u32)
+    };
+    let mut a = a0 % n;
+    if a.is_zero() || a.is_one() {
+        a = BigUint::from(2u32);
+    }
+    let bound = config.trial_bound.max(1000).min(50_000);
     for i in 2..=bound {
-        if let Some(dl) = deadline { if Instant::now() >= dl { return Err(FactorError::Timeout); } }
+        if config.operation_budget > 0 && *ops >= config.operation_budget {
+            return Err(FactorError::BudgetExhausted);
+        }
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                return Err(FactorError::Timeout);
+            }
+        }
         a = mod_pow(&a, &BigUint::from(i), n)?;
-        let g = gcd(&(a.clone() - BigUint::one()), n);
+        // Guard underflow: only compute a-1 when a >= 1
+        if a.is_zero() {
+            continue;
+        }
+        let am1 = &a - BigUint::one(); // a >= 1 here
+        let g = gcd(&am1, n);
         *ops += 5;
-        if g > BigUint::one() && &g < n { return Ok(Some(g)); }
+        if g > BigUint::one() && &g < n {
+            return Ok(Some(g));
+        }
     }
     Ok(None)
 }
 
 fn is_prime_quick(n: &BigUint, config: &FactorJobConfig) -> bool {
-    miller_rabin(n, config.mr_rounds.min(8), config.seed)
-        .map(|e| matches!(e.status, PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. }))
+    miller_rabin(n, config.mr_rounds.min(8).max(1), config.seed)
+        .map(|e| {
+            matches!(
+                e.status,
+                PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. }
+            )
+        })
         .unwrap_or(false)
 }
 
-fn finalize(st: State, config: &FactorJobConfig, start: Instant, timed_out: bool, budget: bool) -> Result<FactorizationResult, FactorError> {
+fn finalize(
+    st: State,
+    config: &FactorJobConfig,
+    start: Instant,
+    timed_out: bool,
+    budget: bool,
+) -> Result<FactorizationResult, FactorError> {
     let mut clean: BTreeMap<BigUint, u32> = BTreeMap::new();
     let mut leftover = st.remaining.clone();
     for (f, e) in st.factors {
         if is_prime_quick(&f, config) {
             *clean.entry(f).or_insert(0) += e;
         } else {
-            for _ in 0..e { leftover *= &f; }
+            for _ in 0..e {
+                leftover *= &f;
+            }
         }
     }
 
     let mut discovered = Vec::new();
     for (p, e) in &clean {
-        let status = miller_rabin(p, config.mr_rounds, config.seed).map(|e| e.status).unwrap_or(PrimalityStatus::Undetermined);
-        discovered.push(FactorPower { prime: CanonicalInteger::from_biguint(p), exponent: *e, primality: status });
+        let status = miller_rabin(p, config.mr_rounds, config.seed)
+            .map(|e| e.status)
+            .unwrap_or(PrimalityStatus::Undetermined);
+        discovered.push(FactorPower {
+            prime: CanonicalInteger::from_biguint(p),
+            exponent: *e,
+            primality: status,
+        });
     }
     discovered.sort_by(|a, b| a.prime.0.cmp(&b.prime.0));
 
     let mut product = BigUint::one();
-    for (p, e) in &clean { for _ in 0..*e { product *= p; } }
-    if !leftover.is_one() { product *= &leftover; }
+    for (p, e) in &clean {
+        for _ in 0..*e {
+            product *= p;
+        }
+    }
+    if !leftover.is_one() {
+        product *= &leftover;
+    }
 
     let completeness = if leftover.is_one() && product == st.original {
         Completeness::Complete
@@ -308,7 +476,11 @@ fn finalize(st: State, config: &FactorJobConfig, start: Instant, timed_out: bool
     };
 
     let verification = if product == st.original {
-        if completeness == Completeness::Complete { VerificationStatus::Verified } else { VerificationStatus::Partial }
+        if completeness == Completeness::Complete {
+            VerificationStatus::Verified
+        } else {
+            VerificationStatus::Partial
+        }
     } else {
         VerificationStatus::Failed
     };
@@ -316,7 +488,9 @@ fn finalize(st: State, config: &FactorJobConfig, start: Instant, timed_out: bool
     let input_primality = if completeness == Completeness::Complete && clean.len() == 1 {
         let (p, e) = clean.iter().next().unwrap();
         if *e == 1 {
-            miller_rabin(p, config.mr_rounds, config.seed).map(|e| e.status).unwrap_or(PrimalityStatus::Undetermined)
+            miller_rabin(p, config.mr_rounds, config.seed)
+                .map(|e| e.status)
+                .unwrap_or(PrimalityStatus::Undetermined)
         } else {
             PrimalityStatus::Composite
         }
@@ -345,13 +519,20 @@ fn finalize(st: State, config: &FactorJobConfig, start: Instant, timed_out: bool
         },
         reproducibility_metadata: ReproducibilityMetadata {
             seed: config.seed,
-            config_hash: format!("{:x}", config.seed.wrapping_mul(31).wrapping_add(config.mr_rounds as u64)),
+            config_hash: config.config_hash(),
         },
-        remaining_cofactor: if leftover.is_one() { None } else { Some(CanonicalInteger::from_biguint(&leftover)) },
+        remaining_cofactor: if leftover.is_one() {
+            None
+        } else {
+            Some(CanonicalInteger::from_biguint(&leftover))
+        },
     })
 }
 
-pub fn factorize_str(s: &str, config: Option<FactorJobConfig>) -> Result<FactorizationResult, FactorError> {
+pub fn factorize_str(
+    s: &str,
+    config: Option<FactorJobConfig>,
+) -> Result<FactorizationResult, FactorError> {
     let n = parse_integer(s)?;
     factorize(&n, &config.unwrap_or_default())
 }
@@ -375,6 +556,16 @@ mod tests {
     }
 
     #[test]
+    fn factor_251_squared() {
+        let n = BigUint::from(63001u32); // 251²
+        let res = factorize(&n, &FactorJobConfig::default()).unwrap();
+        assert_eq!(res.completeness, Completeness::Complete);
+        assert_eq!(res.discovered_factors.len(), 1);
+        assert_eq!(res.discovered_factors[0].prime.as_str(), "251");
+        assert_eq!(res.discovered_factors[0].exponent, 2);
+    }
+
+    #[test]
     fn factor_prime() {
         let res = factorize(&17u32.into(), &FactorJobConfig::default()).unwrap();
         assert_eq!(res.discovered_factors.len(), 1);
@@ -384,5 +575,22 @@ mod tests {
     fn factor_8() {
         let res = factorize(&8u32.into(), &FactorJobConfig::default()).unwrap();
         assert_eq!(res.discovered_factors[0].exponent, 3);
+    }
+
+    #[test]
+    fn zero_mr_rounds_rejected() {
+        let mut cfg = FactorJobConfig::default();
+        cfg.mr_rounds = 0;
+        assert!(factorize(&15u32.into(), &cfg).is_err());
+    }
+
+    #[test]
+    fn config_hash_stable() {
+        let a = FactorJobConfig::default();
+        let b = FactorJobConfig::default();
+        assert_eq!(a.config_hash(), b.config_hash());
+        let mut c = FactorJobConfig::default();
+        c.seed = 99;
+        assert_ne!(a.config_hash(), c.config_hash());
     }
 }
