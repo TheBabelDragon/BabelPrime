@@ -132,7 +132,8 @@ fn suyama_curve(sigma: &BigUint, n: &BigUint, ops: &mut u64) -> Result<(BigUint,
     let v = (BigUint::from(4u32) * sigma) % n;
     let vmu = mod_sub(&v, &u, n);
     let vmu3 = { let v2 = (&vmu * &vmu) % n; (&v2 * &vmu) % n };
-    let num = (&vmu3 * &mod_add(&(BigUint::from(3u32) * &u) % n, &v, n)) % n;
+    let three_u = (BigUint::from(3u32) * &u) % n;
+    let num = (&vmu3 * &mod_add(&three_u, &v, n)) % n;
     let u3 = { let u2 = (&u * &u) % n; (&u2 * &u) % n };
     let den = (BigUint::from(16u32) * &u3 % n * &v) % n;
     *ops += 10;
@@ -254,7 +255,7 @@ pub fn ecm_stage1(
         state.next_curve += 1;
         state.curves_completed += 1;
         if let Some(cfg) = checkpoint {
-            if ops > 0 && ops.is_multiple_of(cfg.interval_ops) { write_ckpt(&state, ops)?; }
+            if ops > 0 && ops % cfg.interval_ops == 0 { write_ckpt(&state, ops)?; }
         }
     }
     Ok(EcmOutcome::NoFactor { curves_tried: state.curves_completed, operations: ops })
