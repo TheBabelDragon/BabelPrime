@@ -114,19 +114,19 @@ impl<T: Serialize + DeserializeOwned> CheckpointEnvelope<T> {
     ) -> Result<(), CheckpointError> {
         self.validate_integrity()?;
         if self.input_integer != input_integer {
-            return Err(CheckpointError::Mismatch(format!("input mismatch")));
+            return Err(CheckpointError::Mismatch("input mismatch".to_string()));
         }
         if self.config_hash != config_hash {
-            return Err(CheckpointError::Mismatch(format!("config_hash mismatch")));
+            return Err(CheckpointError::Mismatch("config_hash mismatch".to_string()));
         }
         if self.seed != seed {
-            return Err(CheckpointError::Mismatch(format!("seed mismatch")));
+            return Err(CheckpointError::Mismatch("seed mismatch".to_string()));
         }
         if self.algorithm != algorithm {
-            return Err(CheckpointError::Mismatch(format!("algorithm mismatch")));
+            return Err(CheckpointError::Mismatch("algorithm mismatch".to_string()));
         }
         if self.algorithm_version != algorithm_version {
-            return Err(CheckpointError::Mismatch(format!("algorithm_version mismatch")));
+            return Err(CheckpointError::Mismatch("algorithm_version mismatch".to_string()));
         }
         Ok(())
     }
@@ -217,7 +217,10 @@ mod tests {
             42,
             step * 10,
             "dummy",
-            DummyState { step, label: "ok".into() },
+            DummyState {
+                step,
+                label: "ok".into(),
+            },
         )
         .unwrap()
     }
@@ -239,7 +242,10 @@ mod tests {
         let mut v = serde_json::to_value(&env).unwrap();
         v["state"]["step"] = json!(999);
         let tampered: CheckpointEnvelope<DummyState> = serde_json::from_value(v).unwrap();
-        assert!(matches!(tampered.validate_integrity(), Err(CheckpointError::Integrity { .. })));
+        assert!(matches!(
+            tampered.validate_integrity(),
+            Err(CheckpointError::Integrity { .. })
+        ));
     }
 
     #[test]
@@ -247,7 +253,10 @@ mod tests {
         let mut env = sample_env(1);
         env.schema_version = "9.9.9".into();
         env.integrity_hash = env.compute_hash().unwrap();
-        assert!(matches!(env.validate_integrity(), Err(CheckpointError::UnsupportedVersion(_))));
+        assert!(matches!(
+            env.validate_integrity(),
+            Err(CheckpointError::UnsupportedVersion(_))
+        ));
     }
 
     #[test]
@@ -274,7 +283,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.ckpt");
         File::create(&path).unwrap();
-        assert!(matches!(load_checkpoint::<DummyState>(&path), Err(CheckpointError::Truncated)));
+        assert!(matches!(
+            load_checkpoint::<DummyState>(&path),
+            Err(CheckpointError::Truncated)
+        ));
     }
 
     #[test]
