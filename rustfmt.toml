@@ -1,0 +1,4 @@
+# Prefer readable but allow compact single-line items where natural.
+edition = "2021"
+use_small_heuristics = "Max"
+nxnline_style = "Unix"
