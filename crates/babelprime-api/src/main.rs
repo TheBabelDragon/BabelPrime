@@ -1,13 +1,16 @@
 //! BabelPrime CLI.
 
-use babelprime_core::{factor_to_json, primality_to_json, verify_json, VERSION};
-use babelprime_factor::FactorJobConfig;
+use babelprime_core::{factor_to_json, primality_to_json, verify_json, FactorJobConfig, VERSION};
 use clap::{Parser, Subcommand};
 use std::io::{self, Read};
 use std::process;
 
 #[derive(Parser)]
-#[command(name = "babelprime", version = VERSION, about = "Arbitrary-precision factorization and primality engine")]
+#[command(
+    name = "babelprime",
+    version = VERSION,
+    about = "Arbitrary-precision factorization and primality engine"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -80,11 +83,8 @@ fn main() {
             };
             match factor_to_json(&input, Some(config)) {
                 Ok(out) => {
-                    if json {
-                        println!("{out}");
-                    } else {
-                        println!("{out}");
-                    }
+                    let _ = json;
+                    println!("{out}");
                 }
                 Err(e) => {
                     eprintln!("error: {e}");
