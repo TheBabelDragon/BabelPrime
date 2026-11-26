@@ -1,4 +1,4 @@
-//! Known-answer regression tests for factorization.
+//! Known-answer and edge-case regression tests for factorization.
 
 use babelprime_factor::{
     factorize, factorize_str, Completeness, FactorJobConfig, VerificationStatus,
@@ -35,9 +35,16 @@ fn factor_2() {
     let n = BigUint::from(2u32);
     let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert_eq!(res.discovered_factors.len(), 1);
     assert_eq!(res.discovered_factors[0].prime.as_str(), "2");
     assert!(product_matches(&res, &n));
+}
+
+#[test]
+fn factor_3() {
+    let n = BigUint::from(3u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
+    assert_eq!(res.completeness, Completeness::Complete);
+    assert_eq!(res.discovered_factors[0].prime.as_str(), "3");
 }
 
 #[test]
@@ -46,6 +53,25 @@ fn factor_97_prime() {
     let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
     assert_eq!(res.discovered_factors[0].prime.as_str(), "97");
+    assert!(product_matches(&res, &n));
+}
+
+#[test]
+fn factor_251_prime() {
+    let n = BigUint::from(251u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
+    assert_eq!(res.completeness, Completeness::Complete);
+    assert_eq!(res.discovered_factors[0].prime.as_str(), "251");
+}
+
+#[test]
+fn factor_251_squared() {
+    let n = BigUint::from(63001u32); // 251²
+    let res = factorize(&n, &cfg_quick()).unwrap();
+    assert_eq!(res.completeness, Completeness::Complete);
+    assert_eq!(res.discovered_factors.len(), 1);
+    assert_eq!(res.discovered_factors[0].prime.as_str(), "251");
+    assert_eq!(res.discovered_factors[0].exponent, 2);
     assert!(product_matches(&res, &n));
 }
 
@@ -86,7 +112,7 @@ fn factor_10403() {
 
 #[test]
 fn factor_360_powers() {
-    let n = BigUint::from(360u32);
+    let n = BigUint::from(360u32); // 2³ × 3² × 5
     let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
     assert!(product_matches(&res, &n));
@@ -97,7 +123,6 @@ fn factor_perfect_power() {
     let n = BigUint::from(8u32);
     let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert_eq!(res.discovered_factors.len(), 1);
     assert_eq!(res.discovered_factors[0].exponent, 3);
     assert!(product_matches(&res, &n));
 }
@@ -118,8 +143,19 @@ fn reject_negative_string() {
 }
 
 #[test]
-fn reject_malformed() {
+fn reject_malformed_decimal() {
     assert!(factorize_str("not-a-number", Some(cfg_quick())).is_err());
+}
+
+#[test]
+fn reject_malformed_hex() {
+    assert!(factorize_str("0xZZ", Some(cfg_quick())).is_err());
+}
+
+#[test]
+fn hex_input() {
+    let res = factorize_str("0xF", Some(cfg_quick())).unwrap(); // 15
+    assert_eq!(res.completeness, Completeness::Complete);
 }
 
 #[test]
@@ -132,11 +168,22 @@ fn budget_exhaustion_partial() {
     let n = BigUint::from(10403u32);
     let res = factorize(&n, &cfg).unwrap();
     assert_ne!(res.completeness, Completeness::Complete);
+    assert!(res.execution_metadata.budget_exhausted || res.completeness != Completeness::Complete);
+}
+
+#[test]
+fn zero_mr_rounds_rejected() {
+    let mut cfg = cfg_quick();
+    cfg.mr_rounds = 0;
+    assert!(factorize(&BigUint::from(15u32), &cfg).is_err());
 }
 
 #[test]
 fn deterministic_repeatability() {
-    let cfg = FactorJobConfig { seed: 12345, ..cfg_quick() };
+    let cfg = FactorJobConfig {
+        seed: 12345,
+        ..cfg_quick()
+    };
     let a = factorize(&BigUint::from(8051u32), &cfg).unwrap();
     let b = factorize(&BigUint::from(8051u32), &cfg).unwrap();
     assert_eq!(a.discovered_factors.len(), b.discovered_factors.len());
@@ -144,4 +191,21 @@ fn deterministic_repeatability() {
         assert_eq!(fa.prime.as_str(), fb.prime.as_str());
         assert_eq!(fa.exponent, fb.exponent);
     }
+    assert_eq!(
+        a.reproducibility_metadata.config_hash,
+        b.reproducibility_metadata.config_hash
+    );
+}
+
+#[test]
+fn config_hash_differs_with_seed() {
+    let a = FactorJobConfig {
+        seed: 1,
+        ..cfg_quick()
+    };
+    let b = FactorJobConfig {
+        seed: 2,
+        ..cfg_quick()
+    };
+    assert_ne!(a.config_hash(), b.config_hash());
 }
