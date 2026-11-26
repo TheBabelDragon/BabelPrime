@@ -2,24 +2,24 @@
 
 **Verifiable arbitrary-precision integer factorization and primality research engine.**
 
-BabelPrime provides a modular classical factorization system with independently verifiable results, resumable computation, algorithm selection, and interfaces for future distributed and quantum backends.
+BabelPrime provides a modular classical factorization system with independently verifiable results, algorithm selection under explicit resource budgets, and interfaces for future distributed and quantum backends.
 
 > **Honest scope statement:** BabelPrime does **not** claim polynomial-time classical integer factorization. General-purpose classical factoring remains subexponential (and in practice exponential for hard instances). Primality testing, by contrast, is in P.
 
 ## Features (v0.1.0)
 
 - Arbitrary-precision integers (via `num-bigint`)
-- Small-prime trial division
+- Small-prime trial division (including boundary primes such as 251)
 - Perfect-power detection
 - GCD and modular arithmetic
 - Miller–Rabin probable-prime testing with explicit assurance metadata
-- Pollard rho (reproducible seeds)
-- Pollard p−1
-- Algorithm dispatch with bounded execution budgets
+- Pollard rho (reproducible seeds, bounded retries)
+- Pollard p−1 (underflow-safe)
+- Algorithm dispatch with wall-clock timeout and operation budgets
 - Recursive factor decomposition
 - Versioned, independently verifiable JSON result schema
-- Deterministic job configuration and reproducibility metadata
-- Independent verification crate
+- Deterministic job configuration and full config hashing
+- Independent structural verification crate
 
 ### Explicitly *not* operational in v0.1
 
@@ -28,21 +28,24 @@ BabelPrime provides a modular classical factorization system with independently 
 - General Number Field Sieve (GNFS)
 - Distributed relation collection
 - Quantum order-finding backend
+- Checkpoint / resume of mid-job factorization state (planned; not implemented)
 
-Interfaces for these exist as stubs only.
+Interfaces for future algorithms exist as stubs only.
+
+## What the verifier proves
+
+`babelprime-verify` performs **structural reconstruction only**:
+
+- every listed factor divides the input;
+- product of factors (× remaining cofactor) equals the input;
+- completeness, verification status, and remaining cofactor are consistent;
+- complete results do not list composite-status factors.
+
+It does **not** issue primality certificates. Probable primes remain labelled as such. Use `recheck_primality` for an independent Miller–Rabin re-evaluation.
 
 ## Architecture ownership
 
-BabelPrime owns:
-
-- Integer factorization
-- Primality testing & certificates
-- Arbitrary-precision integer interfaces for factoring
-- Factorization algorithm selection
-- Factorization job state and result schemas
-- Factorization-specific benchmarking
-
-It does **not** own general execution authorization, typed state/invariants, tensor infrastructure, independent mathematical validation frameworks, or quantum-gravity research. Integration with other BabelDragon projects occurs only through explicit interfaces; there are no mandatory dependencies on them.
+BabelPrime owns factorization, primality testing, arbitrary-precision interfaces for factoring, algorithm selection, job/result schemas, and factorization-specific benchmarking. It does **not** own general execution authorization, typed state frameworks, tensor infrastructure, or other BabelDragon research domains. There are no mandatory dependencies on other BabelDragon repositories.
 
 ## Quick start
 
@@ -59,25 +62,6 @@ cargo run -p babelprime-api -- primality 18446744073709551557
 
 # Verify a result JSON
 cargo run -p babelprime-api -- factor 91 --json | cargo run -p babelprime-api -- verify
-```
-
-## Result schema (excerpt)
-
-Every result distinguishes proven prime / probable prime / composite, and complete / partial / incomplete factorizations. See [docs/RESULT_SCHEMA.md](docs/RESULT_SCHEMA.md).
-
-## Repository layout
-
-```
-crates/
-  babelprime-arithmetic/   # GCD, modexp, perfect powers, canonical integers
-  babelprime-primality/    # Miller–Rabin + evidence
-  babelprime-factor/       # Algorithms + job engine + result types
-  babelprime-verify/       # Independent reconstruction & checks
-  babelprime-core/         # Public re-exports
-  babelprime-api/          # CLI
-python/babelprime/         # Research API (thin)
-tests/                     # Vectors and integration tests
-docs/                      # Architecture, algorithms, security, …
 ```
 
 ## Documentation
