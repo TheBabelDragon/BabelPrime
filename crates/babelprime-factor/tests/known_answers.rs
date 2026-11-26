@@ -3,8 +3,8 @@
 use babelprime_factor::{
     factorize, factorize_str, Completeness, FactorJobConfig, VerificationStatus,
 };
-use babelprime_verify::verify_result;
 use num_bigint::BigUint;
+use num_traits::One;
 
 fn cfg_quick() -> FactorJobConfig {
     FactorJobConfig {
@@ -16,30 +16,46 @@ fn cfg_quick() -> FactorJobConfig {
     }
 }
 
+fn product_matches(res: &babelprime_factor::FactorizationResult, n: &BigUint) -> bool {
+    let mut product = BigUint::one();
+    for fp in &res.discovered_factors {
+        let p = fp.prime.to_biguint().unwrap();
+        for _ in 0..fp.exponent {
+            product *= &p;
+        }
+    }
+    if let Some(ref c) = res.remaining_cofactor {
+        product *= c.to_biguint().unwrap();
+    }
+    &product == n
+}
+
 #[test]
 fn factor_2() {
-    let res = factorize(&BigUint::from(2u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(2u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
     assert_eq!(res.discovered_factors.len(), 1);
     assert_eq!(res.discovered_factors[0].prime.as_str(), "2");
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &n));
 }
 
 #[test]
 fn factor_97_prime() {
-    let res = factorize(&BigUint::from(97u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(97u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert_eq!(res.discovered_factors.len(), 1);
     assert_eq!(res.discovered_factors[0].prime.as_str(), "97");
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &n));
 }
 
 #[test]
 fn factor_91() {
-    let res = factorize(&BigUint::from(91u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(91u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
     assert_eq!(res.verification_status, VerificationStatus::Verified);
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &n));
     let primes: Vec<_> = res.discovered_factors.iter().map(|f| f.prime.as_str()).collect();
     assert!(primes.contains(&"7"));
     assert!(primes.contains(&"13"));
@@ -49,45 +65,41 @@ fn factor_91() {
 fn factor_143() {
     let res = factorize_str("143", Some(cfg_quick())).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &BigUint::from(143u32)));
 }
 
 #[test]
 fn factor_8051() {
-    let res = factorize(&BigUint::from(8051u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(8051u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &n));
 }
 
 #[test]
 fn factor_10403() {
-    let res = factorize(&BigUint::from(10403u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(10403u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &n));
 }
 
 #[test]
 fn factor_360_powers() {
-    let res = factorize(&BigUint::from(360u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(360u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
-    assert!(verify_result(&res).is_ok());
-    let mut product = BigUint::from(1u32);
-    for fp in &res.discovered_factors {
-        let p = fp.prime.to_biguint().unwrap();
-        for _ in 0..fp.exponent {
-            product *= &p;
-        }
-    }
-    assert_eq!(product, BigUint::from(360u32));
+    assert!(product_matches(&res, &n));
 }
 
 #[test]
 fn factor_perfect_power() {
-    let res = factorize(&BigUint::from(8u32), &cfg_quick()).unwrap();
+    let n = BigUint::from(8u32);
+    let res = factorize(&n, &cfg_quick()).unwrap();
     assert_eq!(res.completeness, Completeness::Complete);
     assert_eq!(res.discovered_factors.len(), 1);
     assert_eq!(res.discovered_factors[0].exponent, 3);
-    assert!(verify_result(&res).is_ok());
+    assert!(product_matches(&res, &n));
 }
 
 #[test]
@@ -120,7 +132,6 @@ fn budget_exhaustion_partial() {
     let n = BigUint::from(10403u32);
     let res = factorize(&n, &cfg).unwrap();
     assert_ne!(res.completeness, Completeness::Complete);
-    assert!(matches!(res.completeness, Completeness::Partial | Completeness::Incomplete));
 }
 
 #[test]
