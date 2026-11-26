@@ -34,11 +34,6 @@ jobs:
         run: cargo test --workspace
       - name: Build release
         run: cargo build --workspace --release
-      - name: Generate Cargo.lock artifact
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo generate-lockfile
-          echo "Cargo.lock generated; commit from CI artifact if missing"
 
   python:
     name: Python
