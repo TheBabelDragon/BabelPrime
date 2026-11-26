@@ -18,6 +18,8 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 num-bigint = { workspace = true }
