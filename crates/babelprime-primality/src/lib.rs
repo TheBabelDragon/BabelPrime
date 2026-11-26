@@ -40,9 +40,9 @@ pub enum PrimalityError {
 /// Primes used for trial screening. Includes 251 so that 251² = 63001 is
 /// correctly identified as composite during screening.
 const SMALL_PRIMES: &[u64] = &[
-    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
-    97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
-    191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
+    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+    101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
+    197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
 ];
 
 /// Largest prime in SMALL_PRIMES. ProvenPrime via trial is only claimed when
@@ -61,12 +61,7 @@ pub fn miller_rabin(
         return Ok(ev(PrimalityStatus::ProvenPrime, "trivial", vec![], Some(2)));
     }
     if !n.bit(0) {
-        return Ok(ev(
-            PrimalityStatus::Composite,
-            "trial_division",
-            vec!["2".into()],
-            None,
-        ));
+        return Ok(ev(PrimalityStatus::Composite, "trial_division", vec!["2".into()], None));
     }
 
     let sqrt_n = n.sqrt();
@@ -79,12 +74,7 @@ pub fn miller_rabin(
             return Ok(ev(PrimalityStatus::ProvenPrime, "trial_division", vec![], Some(p)));
         }
         if n % &pb == BigUint::zero() {
-            return Ok(ev(
-                PrimalityStatus::Composite,
-                "trial_division",
-                vec![p.to_string()],
-                None,
-            ));
+            return Ok(ev(PrimalityStatus::Composite, "trial_division", vec![p.to_string()], None));
         }
     }
 
@@ -122,23 +112,20 @@ pub fn miller_rabin(
 
     // Conservative error bound: ~4^{-rounds} under random bases.
     Ok(ev(
-        PrimalityStatus::ProbablePrime {
-            rounds,
-            error_bound_bits: rounds.saturating_mul(2),
-        },
+        PrimalityStatus::ProbablePrime { rounds, error_bound_bits: rounds.saturating_mul(2) },
         "miller_rabin",
         witnesses,
         None,
     ))
 }
 
-fn ev(status: PrimalityStatus, algo: &str, w: Vec<String>, bound: Option<u64>) -> PrimalityEvidence {
-    PrimalityEvidence {
-        status,
-        algorithm: algo.into(),
-        witnesses: w,
-        deterministic_bound: bound,
-    }
+fn ev(
+    status: PrimalityStatus,
+    algo: &str,
+    w: Vec<String>,
+    bound: Option<u64>,
+) -> PrimalityEvidence {
+    PrimalityEvidence { status, algorithm: algo.into(), witnesses: w, deterministic_bound: bound }
 }
 
 fn write_odd(n: &BigUint) -> (BigUint, u32) {
@@ -183,10 +170,7 @@ fn strong_liar(n: &BigUint, a: &BigUint, d: &BigUint, s: u32) -> Result<bool, Pr
 
 pub fn is_probable_prime(n: &BigUint, rounds: u32, seed: u64) -> Result<bool, PrimalityError> {
     let e = miller_rabin(n, rounds, seed)?;
-    Ok(matches!(
-        e.status,
-        PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. }
-    ))
+    Ok(matches!(e.status, PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. }))
 }
 
 pub fn test_primality_str(
