@@ -1,0 +1,24 @@
+# Enforce LF line endings for all text files so rustfmt newline_style = "Unix"
+# is satisfied on Windows, macOS, and Linux checkouts.
+* text=auto eol=lf
+
+# Explicitly force LF for Rust and common config sources
+*.rs text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.txt text eol=lf
+*.lock text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Binary files (if any appear later)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary

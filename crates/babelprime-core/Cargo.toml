@@ -1,0 +1,21 @@
+[package]
+name = "babelprime-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "BabelPrime authoritative computational core – re-exports and high-level entry points"
+
+[dependencies]
+babelprime-arithmetic = { workspace = true }
+babelprime-primality = { workspace = true }
+babelprime-factor = { workspace = true }
+babelprime-verify = { workspace = true }
+num-bigint = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
