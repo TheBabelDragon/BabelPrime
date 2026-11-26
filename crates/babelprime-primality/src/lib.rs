@@ -40,16 +40,20 @@ pub enum PrimalityError {
 /// Primes used for trial screening. Includes 251 so that 251² = 63001 is
 /// correctly identified as composite during screening.
 const SMALL_PRIMES: &[u64] = &[
-    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
-    101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
-    197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
+    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
+    97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
+    191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
 ];
 
 /// Largest prime in SMALL_PRIMES. ProvenPrime via trial is only claimed when
 /// sqrt(n) <= this bound (i.e. n <= LAST_SMALL_PRIME²).
 const LAST_SMALL_PRIME: u64 = 251;
 
-pub fn miller_rabin(n: &BigUint, rounds: u32, seed: u64) -> Result<PrimalityEvidence, PrimalityError> {
+pub fn miller_rabin(
+    n: &BigUint,
+    rounds: u32,
+    seed: u64,
+) -> Result<PrimalityEvidence, PrimalityError> {
     if n.is_zero() || n.is_one() {
         return Ok(ev(PrimalityStatus::Composite, "trivial", vec![], None));
     }
@@ -57,7 +61,12 @@ pub fn miller_rabin(n: &BigUint, rounds: u32, seed: u64) -> Result<PrimalityEvid
         return Ok(ev(PrimalityStatus::ProvenPrime, "trivial", vec![], Some(2)));
     }
     if !n.bit(0) {
-        return Ok(ev(PrimalityStatus::Composite, "trial_division", vec!["2".into()], None));
+        return Ok(ev(
+            PrimalityStatus::Composite,
+            "trial_division",
+            vec!["2".into()],
+            None,
+        ));
     }
 
     let sqrt_n = n.sqrt();
@@ -70,7 +79,12 @@ pub fn miller_rabin(n: &BigUint, rounds: u32, seed: u64) -> Result<PrimalityEvid
             return Ok(ev(PrimalityStatus::ProvenPrime, "trial_division", vec![], Some(p)));
         }
         if n % &pb == BigUint::zero() {
-            return Ok(ev(PrimalityStatus::Composite, "trial_division", vec![p.to_string()], None));
+            return Ok(ev(
+                PrimalityStatus::Composite,
+                "trial_division",
+                vec![p.to_string()],
+                None,
+            ));
         }
     }
 
@@ -144,7 +158,7 @@ fn random_base<R: Rng>(rng: &mut R, n: &BigUint) -> BigUint {
         let mut bytes = vec![0u8; (range.bits() as usize / 8) + 2];
         rng.fill_bytes(&mut bytes);
         let c = BigUint::from_bytes_be(&bytes) % &range + BigUint::from(2u32);
-        if c < *n - BigUint::one() {
+        if c < n.clone() - BigUint::one() {
             return c;
         }
     }
@@ -175,7 +189,11 @@ pub fn is_probable_prime(n: &BigUint, rounds: u32, seed: u64) -> Result<bool, Pr
     ))
 }
 
-pub fn test_primality_str(s: &str, rounds: u32, seed: u64) -> Result<PrimalityEvidence, PrimalityError> {
+pub fn test_primality_str(
+    s: &str,
+    rounds: u32,
+    seed: u64,
+) -> Result<PrimalityEvidence, PrimalityError> {
     miller_rabin(&parse_integer(s)?, rounds, seed)
 }
 
@@ -209,15 +227,10 @@ mod tests {
 
     #[test]
     fn zero_rounds_rejected_for_large() {
-        // n larger than LAST_SMALL_PRIME² needs MR
-        let n = BigUint::from(LAST_SMALL_PRIME) * BigUint::from(LAST_SMALL_PRIME) + BigUint::from(20u32);
-        // Ensure n is odd and larger than bound
-        let n = if n.bit(0) { n } else { n + BigUint::one() };
-        // May be composite or prime; either way rounds=0 must error if screening incomplete
-        // Use a known large prime-ish candidate: next odd after 251²
-        let n = BigUint::from(63013u32); // 63013 is prime, > 251²
+        // 63521 is prime and floor(sqrt(63521)) = 252 > 251, so screening is incomplete.
+        let n = BigUint::from(63521u32);
         let err = miller_rabin(&n, 0, 1);
-        assert!(matches!(err, Err(PrimalityError::ZeroRounds)));
+        assert!(matches!(err, Err(PrimalityError::ZeroRounds)), "{err:?}");
     }
 
     #[test]
