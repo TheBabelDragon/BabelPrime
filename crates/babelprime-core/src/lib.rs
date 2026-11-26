@@ -1,7 +1,7 @@
 //! BabelPrime computational core.
 
 pub use babelprime_arithmetic::{
-    bit_length, gcd, mod_pow, parse_integer, perfect_power, CanonicalInteger, ArithmeticError,
+    bit_length, gcd, mod_pow, parse_integer, perfect_power, ArithmeticError, CanonicalInteger,
 };
 pub use babelprime_factor::{
     factorize, factorize_str, Completeness, ExecutionMetadata, FactorJobConfig, FactorPower,
