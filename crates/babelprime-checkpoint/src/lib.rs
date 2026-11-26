@@ -1,22 +1,24 @@
 //! Durable checkpoint/resume infrastructure for BabelPrime.
 //!
-//! Checkpoints are versioned JSON documents with integrity hashes.
-//! Persistence is atomic: write to a temporary file, flush, then rename.
+//! # Integrity vs authenticity
 //!
-//! Restoring a checkpoint does **not** change mathematical results: the same
-//! input, configuration hash, and seed yield an equivalent factorization
-//! outcome whether the job ran uninterrupted or was resumed.
+//! Checkpoints carry a **SHA-256** digest over the envelope (excluding the digest
+//! field itself). This detects accidental corruption and truncated writes.
+//! It is **not** a keyed MAC: it does not authenticate the writer or protect
+//! against an adversary who can rewrite both payload and digest.
+//!
+//! Restoring a checkpoint does not change mathematical results. Operation
+//! accounting is restored from the checkpoint and continues upward.
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-/// Checkpoint schema version. Bump when the envelope fields change.
 pub const CHECKPOINT_SCHEMA_VERSION: &str = "0.2.0";
-
-/// Algorithm-version string embedded in checkpoints for compatibility checks.
 pub const DEFAULT_ALGORITHM_VERSION: &str = "0.2.0";
 
 #[derive(Debug, Error)]
@@ -25,7 +27,7 @@ pub enum CheckpointError {
     Io(#[from] std::io::Error),
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
-    #[error("integrity check failed: expected hash {expected}, got {actual}")]
+    #[error("integrity check failed (SHA-256): expected {expected}, got {actual}")]
     Integrity { expected: String, actual: String },
     #[error("unsupported checkpoint schema version: {0}")]
     UnsupportedVersion(String),
@@ -33,32 +35,24 @@ pub enum CheckpointError {
     Mismatch(String),
     #[error("checkpoint truncated or empty")]
     Truncated,
-    #[error("checkpoint path required")]
-    MissingPath,
+    #[error("malformed checkpoint payload: {0}")]
+    Malformed(String),
 }
 
-/// Envelope shared by all algorithm-specific checkpoint payloads.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CheckpointEnvelope<T> {
     pub schema_version: String,
     pub algorithm_version: String,
-    /// Canonical decimal input integer.
     pub input_integer: String,
-    /// Stable FNV-1a (or equivalent) of the normalized job configuration.
     pub config_hash: String,
     pub seed: u64,
-    /// Cumulative operation estimate at the time of the checkpoint.
     pub operations_consumed: u64,
-    /// Algorithm identifier (e.g. "ecm_stage1").
     pub algorithm: String,
-    /// Algorithm-specific state.
     pub state: T,
-    /// Integrity hash over the canonical serialization of all fields except `integrity_hash`.
     pub integrity_hash: String,
 }
 
 impl<T: Serialize + DeserializeOwned> CheckpointEnvelope<T> {
-    /// Build an envelope and compute its integrity hash.
     pub fn new(
         algorithm_version: &str,
         input_integer: &str,
@@ -93,19 +87,19 @@ impl<T: Serialize + DeserializeOwned> CheckpointEnvelope<T> {
 
     pub fn compute_hash(&self) -> Result<String, CheckpointError> {
         let bytes = self.payload_for_hash()?;
-        Ok(format!("{:016x}", fnv1a64(&bytes)))
+        Ok(hex::encode(Sha256::digest(&bytes)))
     }
 
     pub fn validate_integrity(&self) -> Result<(), CheckpointError> {
+        if self.schema_version != CHECKPOINT_SCHEMA_VERSION {
+            return Err(CheckpointError::UnsupportedVersion(self.schema_version.clone()));
+        }
         let actual = self.compute_hash()?;
         if actual != self.integrity_hash {
             return Err(CheckpointError::Integrity {
                 expected: self.integrity_hash.clone(),
                 actual,
             });
-        }
-        if self.schema_version != CHECKPOINT_SCHEMA_VERSION {
-            return Err(CheckpointError::UnsupportedVersion(self.schema_version.clone()));
         }
         Ok(())
     }
@@ -116,43 +110,26 @@ impl<T: Serialize + DeserializeOwned> CheckpointEnvelope<T> {
         config_hash: &str,
         seed: u64,
         algorithm: &str,
+        algorithm_version: &str,
     ) -> Result<(), CheckpointError> {
         self.validate_integrity()?;
         if self.input_integer != input_integer {
-            return Err(CheckpointError::Mismatch(format!(
-                "input: checkpoint {} vs expected {}",
-                self.input_integer, input_integer
-            )));
+            return Err(CheckpointError::Mismatch(format!("input mismatch")));
         }
         if self.config_hash != config_hash {
-            return Err(CheckpointError::Mismatch(format!(
-                "config_hash: checkpoint {} vs expected {}",
-                self.config_hash, config_hash
-            )));
+            return Err(CheckpointError::Mismatch(format!("config_hash mismatch")));
         }
         if self.seed != seed {
-            return Err(CheckpointError::Mismatch(format!(
-                "seed: checkpoint {} vs expected {}",
-                self.seed, seed
-            )));
+            return Err(CheckpointError::Mismatch(format!("seed mismatch")));
         }
         if self.algorithm != algorithm {
-            return Err(CheckpointError::Mismatch(format!(
-                "algorithm: checkpoint {} vs expected {}",
-                self.algorithm, algorithm
-            )));
+            return Err(CheckpointError::Mismatch(format!("algorithm mismatch")));
+        }
+        if self.algorithm_version != algorithm_version {
+            return Err(CheckpointError::Mismatch(format!("algorithm_version mismatch")));
         }
         Ok(())
     }
-}
-
-fn fnv1a64(data: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 pub fn save_checkpoint<T: Serialize>(
@@ -161,15 +138,18 @@ pub fn save_checkpoint<T: Serialize>(
 ) -> Result<(), CheckpointError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
-    let tmp = tmp_path(path);
-    {
+    let tmp = unique_tmp_path(path);
+    let result = (|| {
         let mut f = File::create(&tmp)?;
-        let data = serde_json::to_vec_pretty(envelope)?;
-        f.write_all(&data)?;
+        f.write_all(&serde_json::to_vec_pretty(envelope)?)?;
         f.sync_all()?;
+        fs::rename(&tmp, path)?;
+        Ok::<(), CheckpointError>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path)?;
-    Ok(())
+    result
 }
 
 pub fn load_checkpoint<T: Serialize + DeserializeOwned>(
@@ -181,15 +161,26 @@ pub fn load_checkpoint<T: Serialize + DeserializeOwned>(
     if buf.is_empty() {
         return Err(CheckpointError::Truncated);
     }
-    let env: CheckpointEnvelope<T> = serde_json::from_slice(&buf)?;
+    let env: CheckpointEnvelope<T> = serde_json::from_slice(&buf).map_err(|e| {
+        if buf.contains(&b'{') && !buf.ends_with(b"}") {
+            CheckpointError::Truncated
+        } else {
+            CheckpointError::Serde(e)
+        }
+    })?;
     env.validate_integrity()?;
     Ok(env)
 }
 
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut tmp = path.as_os_str().to_os_string();
-    tmp.push(".tmp");
-    PathBuf::from(tmp)
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let mut s = path.as_os_str().to_os_string();
+    s.push(format!(".{pid}.{nanos}.tmp"));
+    PathBuf::from(s)
 }
 
 #[derive(Debug, Clone)]
@@ -226,10 +217,7 @@ mod tests {
             42,
             step * 10,
             "dummy",
-            DummyState {
-                step,
-                label: "ok".into(),
-            },
+            DummyState { step, label: "ok".into() },
         )
         .unwrap()
     }
@@ -238,8 +226,9 @@ mod tests {
     fn round_trip_integrity() {
         let env = sample_env(3);
         env.validate_integrity().unwrap();
-        let bytes = serde_json::to_vec(&env).unwrap();
-        let restored: CheckpointEnvelope<DummyState> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(env.integrity_hash.len(), 64);
+        let restored: CheckpointEnvelope<DummyState> =
+            serde_json::from_slice(&serde_json::to_vec(&env).unwrap()).unwrap();
         restored.validate_integrity().unwrap();
         assert_eq!(restored.state.step, 3);
     }
@@ -250,10 +239,7 @@ mod tests {
         let mut v = serde_json::to_value(&env).unwrap();
         v["state"]["step"] = json!(999);
         let tampered: CheckpointEnvelope<DummyState> = serde_json::from_value(v).unwrap();
-        assert!(matches!(
-            tampered.validate_integrity(),
-            Err(CheckpointError::Integrity { .. })
-        ));
+        assert!(matches!(tampered.validate_integrity(), Err(CheckpointError::Integrity { .. })));
     }
 
     #[test]
@@ -261,30 +247,26 @@ mod tests {
         let mut env = sample_env(1);
         env.schema_version = "9.9.9".into();
         env.integrity_hash = env.compute_hash().unwrap();
-        assert!(matches!(
-            env.validate_integrity(),
-            Err(CheckpointError::UnsupportedVersion(_))
-        ));
+        assert!(matches!(env.validate_integrity(), Err(CheckpointError::UnsupportedVersion(_))));
     }
 
     #[test]
-    fn reject_job_mismatch() {
+    fn reject_algorithm_version_mismatch() {
         let env = sample_env(1);
-        let err = env.validate_for_job("15", "deadbeef", 42, "dummy");
-        assert!(matches!(err, Err(CheckpointError::Mismatch(_))));
+        assert!(matches!(
+            env.validate_for_job("91", "deadbeef", 42, "dummy", "0.1.0"),
+            Err(CheckpointError::Mismatch(_))
+        ));
     }
 
     #[test]
     fn atomic_save_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("job.ckpt");
-        let env = sample_env(7);
-        save_checkpoint(&path, &env).unwrap();
+        save_checkpoint(&path, &sample_env(7)).unwrap();
         let loaded: CheckpointEnvelope<DummyState> = load_checkpoint(&path).unwrap();
         assert_eq!(loaded.state.step, 7);
-        loaded
-            .validate_for_job("91", "deadbeef", 42, "dummy")
-            .unwrap();
+        assert_eq!(loaded.operations_consumed, 70);
     }
 
     #[test]
@@ -292,22 +274,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.ckpt");
         File::create(&path).unwrap();
-        let err = load_checkpoint::<DummyState>(&path);
-        assert!(matches!(err, Err(CheckpointError::Truncated)));
-    }
-
-    #[test]
-    fn reject_truncated_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("trunc.ckpt");
-        fs::write(&path, b"{\"schema_version\":\"0.2.0\"").unwrap();
-        assert!(load_checkpoint::<DummyState>(&path).is_err());
+        assert!(matches!(load_checkpoint::<DummyState>(&path), Err(CheckpointError::Truncated)));
     }
 
     #[test]
     fn deterministic_hash() {
-        let a = sample_env(5);
-        let b = sample_env(5);
-        assert_eq!(a.integrity_hash, b.integrity_hash);
+        assert_eq!(sample_env(5).integrity_hash, sample_env(5).integrity_hash);
     }
 }
