@@ -3,18 +3,22 @@
 use babelprime_arithmetic::{
     bit_length, gcd, mod_pow, parse_integer, perfect_power, ArithmeticError, CanonicalInteger,
 };
+use babelprime_checkpoint::{load_checkpoint, save_checkpoint, CheckpointConfig, CheckpointEnvelope};
+use babelprime_ecm::{ecm_stage1, EcmCheckpointState, EcmOutcome, EcmParams};
 use babelprime_primality::{miller_rabin, PrimalityStatus};
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-pub const SCHEMA_VERSION: &str = "0.1.0";
-pub const ALGORITHM_VERSION: &str = "0.1.0";
+pub const SCHEMA_VERSION: &str = "0.1.0"; // serialized result contract (v0.1 compatible)
+pub const ALGORITHM_VERSION: &str = "0.2.0"; // algorithm suite
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,7 +57,7 @@ pub struct ExecutionMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReproducibilityMetadata {
     pub seed: u64,
-    /// Hash of the full normalized configuration (not wall-clock).
+    /// SHA-256 of the full normalized configuration (not wall-clock).
     pub config_hash: String,
 }
 
@@ -80,6 +84,18 @@ pub struct FactorJobConfig {
     pub trial_bound: u64,
     pub enable_rho: bool,
     pub enable_p1: bool,
+    /// Enable ECM Stage 1 after trial / rho / p−1.
+    pub enable_ecm: bool,
+    /// ECM Stage 1 bound B1.
+    pub ecm_b1: u64,
+    /// Maximum ECM curves to attempt.
+    pub ecm_max_curves: u32,
+    /// Optional path for job checkpoints (curve-boundary granularity for ECM).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_path: Option<PathBuf>,
+    /// Write a checkpoint at least every this many estimated operations when set.
+    #[serde(default)]
+    pub checkpoint_interval_ops: u64,
     pub max_depth: u32,
 }
 
@@ -93,17 +109,22 @@ impl Default for FactorJobConfig {
             trial_bound: 100_000,
             enable_rho: true,
             enable_p1: true,
+            enable_ecm: true,
+            ecm_b1: 2_000,
+            ecm_max_curves: 20,
+            checkpoint_path: None,
+            checkpoint_interval_ops: 50_000,
             max_depth: 32,
         }
     }
 }
 
 impl FactorJobConfig {
-    /// Platform-stable identity of the full normalized configuration.
-    /// Uses FNV-1a 64 over a canonical field encoding (not DefaultHasher).
+    /// Collision-resistant identity of the full normalized configuration (SHA-256).
+    /// Not a secret MAC; checkpoint_path is excluded (does not change mathematics).
     pub fn config_hash(&self) -> String {
         let encoded = format!(
-            "v={}|seed={}|timeout={}|budget={}|mr={}|trial={}|rho={}|p1={}|depth={}",
+            "v={}|seed={}|timeout={}|budget={}|mr={}|trial={}|rho={}|p1={}|ecm={}|b1={}|curves={}|depth={}",
             ALGORITHM_VERSION,
             self.seed,
             self.timeout_ms,
@@ -112,19 +133,13 @@ impl FactorJobConfig {
             self.trial_bound,
             self.enable_rho as u8,
             self.enable_p1 as u8,
+            self.enable_ecm as u8,
+            self.ecm_b1,
+            self.ecm_max_curves,
             self.max_depth,
         );
-        format!("{:016x}", fnv1a64(encoded.as_bytes()))
+        hex::encode(Sha256::digest(encoded.as_bytes()))
     }
-}
-
-fn fnv1a64(data: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 #[derive(Debug, Error)]
@@ -189,7 +204,11 @@ pub fn factorize(
         st.record("trial_division");
     }
 
-    let outcome = if st.remaining.is_one() { Ok(()) } else { decompose(&mut st, config, deadline) };
+    let outcome = if st.remaining.is_one() {
+        Ok(())
+    } else {
+        decompose(&mut st, config, deadline)
+    };
     let (timed_out, budget) = match outcome {
         Ok(()) => (false, false),
         Err(FactorError::Timeout) => (true, false),
@@ -281,6 +300,14 @@ fn decompose(
     if config.enable_p1 {
         if let Some(f) = p1(&st.remaining, config.seed, &mut st.ops, config, deadline)? {
             st.record("pollard_p1");
+            divide_out(st, &f, config, deadline)?;
+            return decompose(st, config, deadline);
+        }
+    }
+
+    if config.enable_ecm {
+        if let Some(f) = run_ecm(st, config, deadline)? {
+            st.record("ecm_stage1");
             divide_out(st, &f, config, deadline)?;
             return decompose(st, config, deadline);
         }
@@ -422,10 +449,129 @@ fn p1(
     Ok(None)
 }
 
+/// Serializable factorization job state at curve-boundary granularity for ECM.
+/// Mid-curve scalar-multiplication state is not persisted; resume continues from
+/// the next curve index.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FactorJobCheckpointState {
+    pub remaining: String,
+    pub factors: Vec<(String, u32)>,
+    pub algorithms_used: Vec<String>,
+    pub ecm: Option<EcmCheckpointState>,
+}
+
+fn run_ecm(
+    st: &mut State,
+    config: &FactorJobConfig,
+    deadline: Option<Instant>,
+) -> Result<Option<BigUint>, FactorError> {
+    let params = EcmParams {
+        b1: config.ecm_b1,
+        max_curves: config.ecm_max_curves,
+        seed: config.seed ^ 0xEC11,
+    };
+    let remaining_budget = if config.operation_budget > 0 {
+        config.operation_budget.saturating_sub(st.ops)
+    } else {
+        0
+    };
+    let timeout = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+    let input = st.remaining.to_str_radix(10);
+    let ckpt_cfg = config.checkpoint_path.as_ref().map(|p| CheckpointConfig {
+        path: p.clone(),
+        interval_ops: if config.checkpoint_interval_ops == 0 {
+            50_000
+        } else {
+            config.checkpoint_interval_ops
+        },
+    });
+    let outcome = ecm_stage1(
+        &st.remaining,
+        &params,
+        remaining_budget,
+        timeout,
+        ckpt_cfg.as_ref(),
+        None,
+        st.ops,
+        &input,
+        &config.config_hash(),
+    )
+    .map_err(|e| FactorError::InvalidInput(e.to_string()))?;
+    match outcome {
+        EcmOutcome::Factor(f) => {
+            if f <= BigUint::one() || f >= st.remaining || &st.remaining % &f != BigUint::zero() {
+                return Err(FactorError::InvalidInput("ECM returned invalid factor".into()));
+            }
+            Ok(Some(f))
+        }
+        EcmOutcome::NoFactor { operations, .. }
+        | EcmOutcome::Interrupted { operations, .. } => {
+            st.ops = operations;
+            Ok(None)
+        }
+    }
+}
+
+/// Save a job-level checkpoint (factors found so far + optional ECM curve state).
+#[allow(clippy::too_many_arguments)]
+pub fn save_job_checkpoint(
+    path: &std::path::Path,
+    input: &str,
+    config: &FactorJobConfig,
+    remaining: &BigUint,
+    factors: &BTreeMap<BigUint, u32>,
+    algorithms_used: &[String],
+    ops: u64,
+    ecm: Option<EcmCheckpointState>,
+) -> Result<(), FactorError> {
+    let state = FactorJobCheckpointState {
+        remaining: remaining.to_str_radix(10),
+        factors: factors
+            .iter()
+            .map(|(p, e)| (p.to_str_radix(10), *e))
+            .collect(),
+        algorithms_used: algorithms_used.to_vec(),
+        ecm,
+    };
+    let env = CheckpointEnvelope::new(
+        ALGORITHM_VERSION,
+        input,
+        &config.config_hash(),
+        config.seed,
+        ops,
+        "factor_job",
+        state,
+    )
+    .map_err(|e| FactorError::InvalidInput(e.to_string()))?;
+    save_checkpoint(path, &env).map_err(|e| FactorError::InvalidInput(e.to_string()))
+}
+
+/// Load and validate a job checkpoint against the given config/input.
+pub fn load_job_checkpoint(
+    path: &std::path::Path,
+    input: &str,
+    config: &FactorJobConfig,
+) -> Result<CheckpointEnvelope<FactorJobCheckpointState>, FactorError> {
+    let env: CheckpointEnvelope<FactorJobCheckpointState> =
+        load_checkpoint(path).map_err(|e| FactorError::InvalidInput(e.to_string()))?;
+    env.validate_for_job(
+        input,
+        &config.config_hash(),
+        config.seed,
+        "factor_job",
+        ALGORITHM_VERSION,
+    )
+    .map_err(|e| FactorError::InvalidInput(e.to_string()))?;
+    Ok(env)
+}
+
 fn is_prime_quick(n: &BigUint, config: &FactorJobConfig) -> bool {
     miller_rabin(n, config.mr_rounds.clamp(1, 8), config.seed)
         .map(|e| {
-            matches!(e.status, PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. })
+            matches!(
+                e.status,
+                PrimalityStatus::ProvenPrime | PrimalityStatus::ProbablePrime { .. }
+            )
         })
         .unwrap_or(false)
 }
@@ -543,7 +689,12 @@ pub fn factorize_str(
 }
 
 pub mod future {
+    /// ECM Stage 1 is operational in package v0.2.
     pub fn ecm_available() -> bool {
+        true
+    }
+    /// ECM Stage 2 is not implemented.
+    pub fn ecm_stage2_available() -> bool {
         false
     }
     pub fn quadratic_sieve_available() -> bool {
@@ -554,6 +705,10 @@ pub mod future {
     }
     pub fn quantum_order_finding_available() -> bool {
         false
+    }
+    /// Job checkpoint/resume is available (curve-boundary for ECM).
+    pub fn checkpoint_resume_available() -> bool {
+        true
     }
 }
 
@@ -592,7 +747,10 @@ mod tests {
 
     #[test]
     fn zero_mr_rounds_rejected() {
-        let cfg = FactorJobConfig { mr_rounds: 0, ..Default::default() };
+        let cfg = FactorJobConfig {
+            mr_rounds: 0,
+            ..Default::default()
+        };
         assert!(factorize(&15u32.into(), &cfg).is_err());
     }
 
@@ -601,7 +759,63 @@ mod tests {
         let a = FactorJobConfig::default();
         let b = FactorJobConfig::default();
         assert_eq!(a.config_hash(), b.config_hash());
-        let c = FactorJobConfig { seed: 99, ..Default::default() };
+        assert_eq!(a.config_hash().len(), 64); // SHA-256 hex
+        let c = FactorJobConfig {
+            seed: 99,
+            ..Default::default()
+        };
         assert_ne!(a.config_hash(), c.config_hash());
+        let d = FactorJobConfig {
+            enable_ecm: false,
+            ..Default::default()
+        };
+        assert_ne!(a.config_hash(), d.config_hash());
+    }
+
+    #[test]
+    fn ecm_invoked_when_enabled_on_harder_composite() {
+        let n = BigUint::from(455839u32);
+        let cfg = FactorJobConfig {
+            enable_rho: false,
+            enable_p1: false,
+            enable_ecm: true,
+            ecm_b1: 150,
+            ecm_max_curves: 40,
+            trial_bound: 50,
+            seed: 7,
+            operation_budget: 8_000_000,
+            timeout_ms: 15_000,
+            ..Default::default()
+        };
+        let res = factorize(&n, &cfg).unwrap();
+        if res.completeness == Completeness::Complete {
+            assert!(res
+                .execution_metadata
+                .algorithms_used
+                .iter()
+                .any(|a| a == "ecm_stage1"));
+            let mut prod = BigUint::one();
+            for f in &res.discovered_factors {
+                let p = f.prime.to_biguint().unwrap();
+                for _ in 0..f.exponent {
+                    prod *= &p;
+                }
+            }
+            assert_eq!(prod, n);
+        }
+    }
+
+    #[test]
+    fn ecm_disabled_not_in_algorithms() {
+        let cfg = FactorJobConfig {
+            enable_ecm: false,
+            ..Default::default()
+        };
+        let res = factorize(&15u32.into(), &cfg).unwrap();
+        assert!(!res
+            .execution_metadata
+            .algorithms_used
+            .iter()
+            .any(|a| a.contains("ecm")));
     }
 }
