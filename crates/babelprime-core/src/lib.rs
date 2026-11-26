@@ -1,15 +1,21 @@
 //! BabelPrime computational core.
 
-pub use babelprime_arithmetic::{
-    bit_length, gcd, mod_pow, parse_integer, perfect_power, ArithmeticError, CanonicalInteger,
+pub use babelprime_arithmetic::*;
+pub use babelprime_checkpoint::{
+    load_checkpoint, save_checkpoint, CheckpointConfig, CheckpointEnvelope, CheckpointError,
+    CHECKPOINT_SCHEMA_VERSION,
+};
+pub use babelprime_ecm::{
+    ecm_stage1, try_ecm_factor, EcmCheckpointState, EcmError, EcmOutcome, EcmParams, ECM_ALGORITHM_ID,
 };
 pub use babelprime_factor::{
-    factorize, factorize_str, Completeness, ExecutionMetadata, FactorJobConfig, FactorPower,
-    FactorizationResult, ReproducibilityMetadata, VerificationStatus, ALGORITHM_VERSION,
+    factorize, factorize_str, future, Completeness, ExecutionMetadata, FactorError, FactorJobConfig,
+    FactorPower, FactorizationResult, ReproducibilityMetadata, VerificationStatus, ALGORITHM_VERSION,
     SCHEMA_VERSION,
 };
 pub use babelprime_primality::{
-    is_probable_prime, miller_rabin, PrimalityEvidence, PrimalityStatus,
+    is_probable_prime, miller_rabin, test_primality_str, PrimalityError, PrimalityEvidence,
+    PrimalityStatus,
 };
 pub use babelprime_verify::{recheck_primality, verify_json, verify_result, VerifyError};
 
@@ -36,5 +42,12 @@ mod tests {
         assert!(json.contains("schema_version"));
         let res: FactorizationResult = serde_json::from_str(&json).unwrap();
         assert!(verify_result(&res).is_ok());
+    }
+
+    #[test]
+    fn ecm_available() {
+        assert!(future::ecm_available());
+        assert!(!future::ecm_stage2_available());
+        assert!(future::checkpoint_resume_available());
     }
 }
